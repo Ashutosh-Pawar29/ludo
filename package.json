@@ -25,5 +25,9 @@
   "workspaces": [
     "apps/*",
     "packages/*"
-  ]
+  ],
+  "dependencies": {
+    "prisma": "^8.0.0-rc.14",
+    "zod": "^4.6.5"
+  }
 }

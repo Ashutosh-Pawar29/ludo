@@ -1,0 +1,14 @@
+{
+  "name": "commons-ts",
+  "private": true,
+  "exports":{
+    "./ztypes":"./zod.ts",
+    "./types":"./types.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  }
+}

@@ -1,0 +1,74 @@
+// use prisma-8
+enum gametype {
+  classic
+  quick
+}
+
+model User {
+  id        String    @id @default(uuid())
+  email     String   @unique
+  password  String
+  name      String
+  rank      Int
+  rid       refreshToken[] 
+  roomid    rooms[]
+  wid       gamehistory[] @relation(name: "winner")
+  runnerid       gamehistory[] @relation(name: "runner")
+  gameplayerid   gameplayer[]
+}
+
+model rooms{
+  id        String       @id  @default(uuid())
+  adminId   String
+  maxPlayers Int
+  status    String
+  gid       game[]
+  uid       User     @relation(fields: [adminId],references: [id])
+}
+
+model refreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  token     String
+  valid    Boolean
+  uid      User    @relation(references: [id],fields: [userId])
+}
+
+model gamehistory {
+  id        String    @id @default(uuid())
+  gameId    String
+  winnerId  String
+  runnerId  String
+  gid       game   @relation(references: [id],fields: [gameId])
+  wid       User   @relation(fields: [winnerId],references: [id],name: "winner")
+  rid       User   @relation(fields: [runnerId],references: [id],name: "runner")
+}
+
+model game {
+  id        String    @id @default(uuid())
+  type      gametype
+  roomId    String
+  status    String
+  winnerid  String?
+  runnerid  String?
+  createdAt DateTime  @default(now())
+  startTime DateTime
+  endTime   DateTime?
+  ghid      gamehistory[]
+  rid       rooms     @relation(references: [id],fields: [roomId])
+  playerid   gameplayer[]
+}
+
+
+model gameplayer {
+  id        String    @id @default(uuid())
+  gameId    String
+  playerId  String
+  color     String
+  status    String
+  joinTime  DateTime  @default(now())
+  leftTime  DateTime?
+  rank      Int?
+  uid      User    @relation(references: [id],fields: [playerId])
+  gid      game    @relation(references: [id],fields: [gameId])
+}

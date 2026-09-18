@@ -2,11 +2,13 @@ import {WebSocket, WebSocketServer } from "ws";
 import { authenticate } from "./authenticate";
 import {type ClientMessage} from "commons-ts/game"
 import type { ServerMessage } from "commons-ts/game";
+import { db } from "db";
+import { initGame } from "./gameEngine/gamemodules";
 
 const wss = new WebSocketServer({
     port: 3001
 })
-
+const database = db.orm.public
 let socketconnections = new Map<string,Map<string,WebSocket>>()
 
 export function broadcastToRoom(roomId: string, message: ServerMessage) {
@@ -41,15 +43,44 @@ wss.on("connection",(ws, req)=>{
         socketconnections.set(roomId,new Map())
     }
     socketconnections.get(roomId)!.set(userId,ws)
-    ws.on("message",(msg:ClientMessage)=>{
+    ws.on("message",async (msg:ClientMessage)=>{
         try{
             const message = JSON.parse(msg.toString())
             if(message.type=="PING"){
                 ws.send("PONG")
             }
             else if(message.type == "START_GAME"){
-                broadcastToRoom(roomId,message)
+                const room = socketconnections.get(roomId)
+                if(!room) return
+                const roomRecord =await database.rooms.where({id:roomId}).first()
+                if(!roomRecord){
+                    ws.send(JSON.stringify({ type: "ERROR", message: "Room does not exist" }));
+                    return;
+                }
+
+                if (roomRecord.adminId !== userId) {
+                    ws.send(JSON.stringify({ type: "ERROR", message: "Only the room host can start the game" }));
+                    return;
+                }
+
+                if(room.size<2){
+                    ws.send(JSON.stringify({ type: "ERROR", message: "Need at least 2 players to start" }))
+                    return
+                }
+                const players: { userId: string; name: string }[] = []
+                for(let player of room.keys()){
+                    const user = await database.User.where({"id":player}).first()
+                    if(!user) return
+                    const userId = user.id
+                    const name = user.name
+                    players.push({userId,name})
+                }
+                const initialstate =await initGame(roomId,players,roomRecord.maxPlayers)
+                await database.rooms.where({ id: roomId }).update({ status: "in_progress" });
+                broadcastToRoom(roomId,{type:"GAME_STATE",state:initialstate})
             }
+
+
             else if(message.type == "ROLL_DICE"){
                 broadcastToRoom(roomId,message)
             }

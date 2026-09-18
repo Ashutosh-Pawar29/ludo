@@ -3,7 +3,8 @@
   "private": true,
   "exports":{
     "./ztypes":"./zod.ts",
-    "./types":"./types.ts"
+    "./types":"./types.ts",
+    "./game":"./game.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"

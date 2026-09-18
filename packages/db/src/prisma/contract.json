@@ -64,13 +64,6 @@
                   "kind": "scalar"
                 }
               },
-              "isVerified": {
-                "nullable": false,
-                "type": {
-                  "codecId": "pg/bool@1",
-                  "kind": "scalar"
-                }
-              },
               "name": {
                 "nullable": false,
                 "type": {
@@ -178,9 +171,6 @@
                 "id": {
                   "column": "id"
                 },
-                "isVerified": {
-                  "column": "isVerified"
-                },
                 "name": {
                   "column": "name"
                 },
@@ -280,21 +270,6 @@
                 },
                 "to": {
                   "model": "gamehistory",
-                  "namespace": "public"
-                }
-              },
-              "playerid": {
-                "cardinality": "1:N",
-                "on": {
-                  "localFields": [
-                    "id"
-                  ],
-                  "targetFields": [
-                    "gameId"
-                  ]
-                },
-                "to": {
-                  "model": "gameplayer",
                   "namespace": "public"
                 }
               },
@@ -451,20 +426,6 @@
           },
           "gameplayer": {
             "fields": {
-              "color": {
-                "nullable": false,
-                "type": {
-                  "codecId": "pg/text@1",
-                  "kind": "scalar"
-                }
-              },
-              "gameId": {
-                "nullable": false,
-                "type": {
-                  "codecId": "pg/text@1",
-                  "kind": "scalar"
-                }
-              },
               "id": {
                 "nullable": false,
                 "type": {
@@ -500,6 +461,13 @@
                   "kind": "scalar"
                 }
               },
+              "roomId": {
+                "nullable": false,
+                "type": {
+                  "codecId": "pg/text@1",
+                  "kind": "scalar"
+                }
+              },
               "status": {
                 "nullable": false,
                 "type": {
@@ -509,19 +477,19 @@
               }
             },
             "relations": {
-              "gid": {
+              "rid": {
                 "cardinality": "N:1",
                 "nullable": false,
                 "on": {
                   "localFields": [
-                    "gameId"
+                    "roomId"
                   ],
                   "targetFields": [
                     "id"
                   ]
                 },
                 "to": {
-                  "model": "game",
+                  "model": "rooms",
                   "namespace": "public"
                 }
               },
@@ -544,12 +512,6 @@
             },
             "storage": {
               "fields": {
-                "color": {
-                  "column": "color"
-                },
-                "gameId": {
-                  "column": "gameId"
-                },
                 "id": {
                   "column": "id"
                 },
@@ -564,6 +526,9 @@
                 },
                 "rank": {
                   "column": "rank"
+                },
+                "roomId": {
+                  "column": "roomId"
                 },
                 "status": {
                   "column": "status"
@@ -685,6 +650,21 @@
                 },
                 "to": {
                   "model": "game",
+                  "namespace": "public"
+                }
+              },
+              "playerid": {
+                "cardinality": "1:N",
+                "on": {
+                  "localFields": [
+                    "id"
+                  ],
+                  "targetFields": [
+                    "roomId"
+                  ]
+                },
+                "to": {
+                  "model": "gameplayer",
                   "namespace": "public"
                 }
               },
@@ -941,16 +921,6 @@
             },
             "gameplayer": {
               "columns": {
-                "color": {
-                  "codecId": "pg/text@1",
-                  "nativeType": "text",
-                  "nullable": false
-                },
-                "gameId": {
-                  "codecId": "pg/text@1",
-                  "nativeType": "text",
-                  "nullable": false
-                },
                 "id": {
                   "codecId": "pg/text@1",
                   "nativeType": "text",
@@ -980,6 +950,11 @@
                   "nativeType": "int4",
                   "nullable": true
                 },
+                "roomId": {
+                  "codecId": "pg/text@1",
+                  "nativeType": "text",
+                  "nullable": false
+                },
                 "status": {
                   "codecId": "pg/text@1",
                   "nativeType": "text",
@@ -1006,7 +981,7 @@
                 {
                   "source": {
                     "columns": [
-                      "gameId"
+                      "roomId"
                     ],
                     "namespaceId": "public",
                     "tableName": "gameplayer"
@@ -1016,25 +991,25 @@
                       "id"
                     ],
                     "namespaceId": "public",
-                    "tableName": "game"
+                    "tableName": "rooms"
                   }
                 }
               ],
               "indexes": [
                 {
                   "columns": [
-                    "gameId"
-                  ],
-                  "name": "gameplayer_gameId_idx_6cdb47f8",
-                  "prefix": "gameplayer_gameId_idx",
-                  "unique": false
-                },
-                {
-                  "columns": [
                     "playerId"
                   ],
                   "name": "gameplayer_playerId_idx_710cf1aa",
                   "prefix": "gameplayer_playerId_idx",
+                  "unique": false
+                },
+                {
+                  "columns": [
+                    "roomId"
+                  ],
+                  "name": "gameplayer_roomId_idx_fe51d647",
+                  "prefix": "gameplayer_roomId_idx",
                   "unique": false
                 }
               ],
@@ -1173,11 +1148,6 @@
                   "nativeType": "text",
                   "nullable": false
                 },
-                "isVerified": {
-                  "codecId": "pg/bool@1",
-                  "nativeType": "bool",
-                  "nullable": false
-                },
                 "name": {
                   "codecId": "pg/text@1",
                   "nativeType": "text",
@@ -1224,7 +1194,7 @@
         "kind": "postgres-schema"
       }
     },
-    "storageHash": "df298a5451841bbfab5cd40f8c1ec269cb85aeee21737e384369f27fbd5a44f2"
+    "storageHash": "993998a9c9508ce37a69b3d21bc012137f9152778bc59026a2c5a9f980f0fbee"
   },
   "execution": {
     "executionHash": "8674c2dbde76c5389c9a76ae8d5d7a0f9459990cf413fe9d225d18dc7cf71fd9",

@@ -1,15 +1,17 @@
 import express from "express";
 import { db } from "db";
-import { a, signin } from "commons-ts/ztypes";
-import type { signinBody, signupBody } from "commons-ts/types";
+import { a, createroom, joinroom, signin } from "commons-ts/ztypes";
+import type { createRoom, joinRoom, signinBody, signupBody } from "commons-ts/types";
 import jwt  from "jsonwebtoken";
 import bcrypt from "bcrypt";
-import { authenticate } from "./middlewares";
+import { authenticate, refreshtokenAuthenticate } from "./middlewares";
 
 const database = db.orm.public
 const jwt_pass:string = process.env.JWT_SECRET as string
+const jwt_pass_refreshtoken:string = process.env.REFRESHTOKEN_JWT_SECRET as string
 let refreshtokens = new Map<string,string>()
 const app = express();
+
 app.use(express.json())
 
 app.get("/", async (req, res) => {
@@ -18,7 +20,7 @@ app.get("/", async (req, res) => {
 
 app.post('/api/signup',async (req,res)=>{
     let body:signupBody = req.body;
-    let valid = a.safeParse(body)
+    let valid = a.safeParse(body) 
     if(!valid.success){
         return res.send("invalid data sent. Please send valid data ")
     }
@@ -27,13 +29,13 @@ app.post('/api/signup',async (req,res)=>{
     if(emailExist){
         return res.send("email already exist")
     }
-    let hashpass = await bcrypt.hash(body.password,3)
-    let user = await database.User.create({email:body.email,name:body.username,password:hashpass,rank:0,isVerified:false})
+    let hashpass = await bcrypt.hash(body.password,10)
+    let user = await database.User.create({email:body.email,name:body.username,password:hashpass,rank:0})
     
     if(user){
         let id = user.id
         const token = jwt.sign({id},jwt_pass,{expiresIn:3600})
-        const refreshToken = jwt.sign({id},jwt_pass)
+        const refreshToken = jwt.sign({id},jwt_pass_refreshtoken)
         let refreshTokenRes = await database.refreshToken.create({userId:id,token:refreshToken,valid:true})
         if(refreshTokenRes){
             return res.json({message:"signup successful ",token,refreshToken})
@@ -60,17 +62,22 @@ app.post("/api/signin",async (req,res)=>{
     }
     let id = user.id
     const token = jwt.sign({id},jwt_pass,{expiresIn:3600})
-    const refreshToken = jwt.sign({id},jwt_pass)
+    const refreshToken = jwt.sign({id},jwt_pass_refreshtoken)
     let refreshTokenRes = await database.refreshToken.create({userId:id,token:refreshToken,valid:true})
     if(refreshTokenRes){
-        return res.json({message:"signup successful ",token,refreshToken})
+        return res.json({message:"signin successful ",token,refreshToken})
     }
     res.send('sorry retry')
 })
 
-app.post("/api/refreshtoken",authenticate,(req,res)=>{
-    const id = req.body.id
-    const token = jwt.sign({id},jwt_pass,{expiresIn:3600})
+app.post("/api/refreshtoken",refreshtokenAuthenticate,async (req,res)=>{
+    const id:string = req.body.id
+    const reftoken = req.headers.token as string
+    const refreshToken =await database.refreshToken.where({userId:id,token:reftoken}).first()
+    if(!refreshToken || !refreshToken.valid){
+        return res.send("invalid token")
+    }
+    const token:string = jwt.sign({id},jwt_pass,{expiresIn:3600})
     res.json({token})
 })
 
@@ -78,13 +85,14 @@ app.get("/api/logout",async (req,res)=>{
     const token = req.headers.token as string
     const refreshtoken =await database.refreshToken.where({token}).update({valid:false})
     if(refreshtoken){
-        res.send("logout success")
+        return res.send("logout success")
     }
+    res.send("invalid token sent")
 })
 
 app.get("/api/users/me",authenticate,async (req,res)=>{
     const id = req.body.id
-    const user = await database.User.first({id})
+    const user = await database.User.where({id}).select("id","rank","email","name").first()
     if(!user){
         return res.send("no such user exist ")
     }
@@ -93,7 +101,7 @@ app.get("/api/users/me",authenticate,async (req,res)=>{
 
 app.get("/api/users/:id",async(req,res)=>{
     const id = req.params.id
-    const user =await database.User.first({id})
+    const user =await database.User.select("id","email","name","rank").first({id})
     if(!user){
         return res.send("no such user exist ")
     }
@@ -101,15 +109,44 @@ app.get("/api/users/:id",async(req,res)=>{
 })
 
 app.post("/api/create-room",authenticate,async (req,res)=>{
-    const body = req.body
-    const userid = body.id
-    let user =await database.User.first({id:userid})
+    const body:createRoom = req.body
+    const validation = createroom.safeParse(body)
+    if(!validation.success){
+        return res.send("invalid data sent")
+    }
+    let user =await database.User.first({id:body.id})
     if(!user){
         return res.send("invalid user")
     }
-    let room =await database.rooms.create({adminId:userid,maxPlayers:body.maxPlayers,status:"created"})
-    res.json({"message":"room created ",room})
+    let room =await database.rooms.create({adminId:body.id,maxPlayers:body.maxPlayers,status:"created"})
+    let joined = await database.gameplayer.create({playerId:body.id,roomId:room.id,status:"joined"})
+    if(joined){
+        return res.json({"message":"room created ",room})
+    }
+    res.json({"message":"failed to join room",room})
 })
+
+app.post("/api/join-room",authenticate,async (req,res)=>{
+    const body:joinRoom = req.body
+    const valid = joinroom.safeParse(body)
+    if(!valid.success){
+        return res.json({"message":"invalild data sent"})
+    }
+    const room = await database.rooms.first({id: valid.data.roomid as string})
+    if(room){
+        let playerId = body.userid as string
+        let roomId = body.roomid as string
+        let totalJoinedPlayers = await database.gameplayer.where({roomId}).all()
+        if(room.maxPlayers<=totalJoinedPlayers.length){
+            return res.send("sorry room is full")
+        }
+        let player =await database.gameplayer.create({playerId,roomId,status:"joined"})
+        return res.json({msg:"player joined",player})
+    }
+    res.send("room does not exist")
+})
+
+
 app.get("/api/gamehistory/:gameid",authenticate,async (req,res)=>{
     const gameid = req.params.gameid as string
     let gamehistory =await database.gamehistory.first({gameId:gameid})

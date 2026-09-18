@@ -23,6 +23,7 @@ model rooms{
   maxPlayers Int
   status    String
   gid       game[]
+  playerid   gameplayer[]
   uid       User     @relation(fields: [adminId],references: [id])
 }
 
@@ -56,19 +57,18 @@ model game {
   endTime   DateTime?
   ghid      gamehistory[]
   rid       rooms     @relation(references: [id],fields: [roomId])
-  playerid   gameplayer[]
+  
 }
 
 
 model gameplayer {
   id        String    @id @default(uuid())
-  gameId    String
+  roomId    String
   playerId  String
-  color     String
   status    String
   joinTime  DateTime  @default(now())
   leftTime  DateTime?
   rank      Int?
   uid      User    @relation(references: [id],fields: [playerId])
-  gid      game    @relation(references: [id],fields: [gameId])
+  rid      rooms    @relation(references: [id],fields: [roomId])
 }

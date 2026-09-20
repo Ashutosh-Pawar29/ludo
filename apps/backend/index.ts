@@ -1,4 +1,5 @@
 import express from "express";
+import cors from "cors";
 import { db } from "db";
 import { a, createroom, joinroom, signin } from "commons-ts/ztypes";
 import type { createRoom, joinRoom, signinBody, signupBody } from "commons-ts/types";
@@ -12,6 +13,7 @@ const jwt_pass_refreshtoken:string = process.env.REFRESHTOKEN_JWT_SECRET as stri
 let refreshtokens = new Map<string,string>()
 const app = express();
 
+app.use(cors());
 app.use(express.json())
 
 app.get("/", async (req, res) => {
@@ -38,7 +40,7 @@ app.post('/api/signup',async (req,res)=>{
         const refreshToken = jwt.sign({id},jwt_pass_refreshtoken)
         let refreshTokenRes = await database.refreshToken.create({userId:id,token:refreshToken,valid:true})
         if(refreshTokenRes){
-            return res.json({message:"signup successful ",token,refreshToken})
+            return res.json({message:"signup successful ",token,refreshToken,user:{id,name:body.username,email:body.email}})
         }
         res.send('sorry retry')
     }
@@ -65,7 +67,7 @@ app.post("/api/signin",async (req,res)=>{
     const refreshToken = jwt.sign({id},jwt_pass_refreshtoken)
     let refreshTokenRes = await database.refreshToken.create({userId:id,token:refreshToken,valid:true})
     if(refreshTokenRes){
-        return res.json({message:"signin successful ",token,refreshToken})
+        return res.json({message:"signin successful ",token,refreshToken,user:{id,name:user.name,email:user.email}})
     }
     res.send('sorry retry')
 })
@@ -152,6 +154,16 @@ app.get("/api/gamehistory/:gameid",authenticate,async (req,res)=>{
     let gamehistory =await database.gamehistory.first({gameId:gameid})
     res.json(gamehistory)
 })
+
+app.get("/api/rooms/:id", async (req, res) => {
+    const roomId = req.params.id as string;
+    const room = await database.rooms.first({ id: roomId });
+    if (!room) {
+        return res.status(404).json({ error: "Room not found" });
+    }
+    const players = await database.gameplayer.where({ roomId }).all();
+    res.json({ room, players });
+});
 
 app.listen(process.env.PORT,()=>{
     console.log(`server listening on port ${process.env.PORT}`)

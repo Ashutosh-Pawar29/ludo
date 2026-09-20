@@ -26,6 +26,8 @@ export interface GamePlayer {
   tokens: Token[];
   hasFinished: boolean;
   rank?: number; // 1 for 1st place, 2 for 2nd place, etc.
+  missedTurns?: number; // Consecutive timeout count for autoplay
+  isDisconnected?: boolean;
 }
 
 export type GameStatus = "WAITING" | "STARTING" | "IN_PROGRESS" | "COMPLETED";
@@ -65,6 +67,10 @@ export type ClientMessage =
       tokenId: TokenId;
     }
   | {
+      type: "KICK_PLAYER";
+      targetUserId: string;
+    }
+  | {
       type: "PING";
     };
 
@@ -102,7 +108,23 @@ export type ServerMessage =
       player: GamePlayer;
     }
   | {
+      type: "ROOM_PLAYERS_UPDATE";
+      count: number;
+      maxPlayers?: number;
+      players: { userId: string; name: string }[];
+    }
+  | {
       type: "PLAYER_LEFT";
+      userId: string;
+    }
+  | {
+      type: "PLAYER_INACTIVE_LIMIT";
+      userId: string;
+      name: string;
+      missedCount: number;
+    }
+  | {
+      type: "PLAYER_KICKED";
       userId: string;
     }
   | {

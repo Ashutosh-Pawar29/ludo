@@ -23,6 +23,26 @@ export function broadcastToRoom(roomId: string, message: ServerMessage) {
     }
 }
 
+export async function broadcastLobbyUpdate(roomId: string) {
+    const room = socketconnections.get(roomId);
+    if (!room) return;
+    const roomRecord = await database.rooms.where({ id: roomId }).first();
+    const players: { userId: string; name: string }[] = [];
+    for (const pid of room.keys()) {
+        const u = await database.User.where({ id: pid }).first();
+        if (u) {
+            players.push({ userId: u.id, name: u.name });
+        }
+    }
+    const msg: ServerMessage = {
+        type: "ROOM_PLAYERS_UPDATE",
+        count: room.size,
+        maxPlayers: roomRecord?.maxPlayers ?? 2,
+        players,
+    };
+    broadcastToRoom(roomId, msg);
+}
+
 
 export function getNextTurnUserId(gamestate: LudoGameState, currentUserId: string): string {
     const currentIndex = gamestate.players.findIndex((p) => p.userId === currentUserId);
@@ -31,6 +51,296 @@ export function getNextTurnUserId(gamestate: LudoGameState, currentUserId: strin
         nextIndex = (nextIndex + 1) % gamestate.players.length;
     }
     return gamestate.players[nextIndex]?.userId as string;
+}
+
+export const roomTurnTimers = new Map<string, NodeJS.Timeout>();
+export const TURN_TIMEOUT_MS = 15000; // 15 seconds per turn
+
+export function clearTurnTimer(roomId: string) {
+    const existing = roomTurnTimers.get(roomId);
+    if (existing) {
+        clearTimeout(existing);
+        roomTurnTimers.delete(roomId);
+    }
+}
+
+export function startTurnTimer(roomId: string, timeoutMs: number = TURN_TIMEOUT_MS) {
+    clearTurnTimer(roomId);
+    const timer = setTimeout(() => {
+        handleTurnTimeout(roomId).catch((err) => {
+            console.error(`Error in handleTurnTimeout for room ${roomId}:`, err);
+        });
+    }, timeoutMs);
+    roomTurnTimers.set(roomId, timer);
+}
+
+export async function executeMoveToken(
+    roomId: string,
+    gamestate: LudoGameState,
+    player: GamePlayer,
+    tokenId: TokenId,
+    dice: number,
+    config: ReturnType<typeof getBoardConfig>
+) {
+    const token = player.tokens.find((t) => t.id === tokenId);
+    if (!token) return;
+
+    let killedToken: { userId: string; tokenId: TokenId } | undefined = undefined;
+    let bonusTurn = dice === 6;
+
+    const startPos = config.startPositions[player.color] ?? 0;
+    if (token.status === "BASE") {
+        token.status = "ACTIVE";
+        token.step = 1;
+        token.position = startPos;
+    } else if (token.status === "ACTIVE") {
+        token.step += dice;
+        if (token.step === config.totalStepsToHome) {
+            token.status = "HOME";
+            token.position = -1;
+            bonusTurn = true;
+        } else {
+            const commonTrackSteps = config.totalCommonCells - 1;
+            if (token.step <= commonTrackSteps) {
+                token.position = (startPos + (token.step - 1)) % config.totalCommonCells;
+
+                // Check for captures on non-safe positions
+                const isSafe = config.safePositions.includes(token.position);
+                if (!isSafe) {
+                    for (const opponent of gamestate.players) {
+                        if (opponent.userId === player.userId) continue;
+                        for (const oppToken of opponent.tokens) {
+                            if (oppToken.status === "ACTIVE" && oppToken.position === token.position) {
+                                oppToken.status = "BASE";
+                                oppToken.step = 0;
+                                oppToken.position = -1;
+                                killedToken = { userId: opponent.userId, tokenId: oppToken.id };
+                                bonusTurn = true;
+                                break;
+                            }
+                        }
+                        if (killedToken) break;
+                    }
+                }
+            } else {
+                token.position = 100 + (token.step - commonTrackSteps);
+            }
+        }
+    }
+
+    // Check if this player has finished
+    const allHome = player.tokens.every((t) => t.status === "HOME");
+    if (allHome && !player.hasFinished) {
+        player.hasFinished = true;
+        player.rank = gamestate.rankings.length + 1;
+        gamestate.rankings.push(player.userId);
+        if (!gamestate.winnerId) {
+            gamestate.winnerId = player.userId;
+        }
+    }
+
+    // Check Game Over (if 1 or fewer players remain unfinished)
+    const unfinishedPlayers = gamestate.players.filter((p) => !p.hasFinished);
+    if (unfinishedPlayers.length <= 1) {
+        const lastPlayer = unfinishedPlayers[0];
+        if (lastPlayer) {
+            lastPlayer.hasFinished = true;
+            lastPlayer.rank = gamestate.rankings.length + 1;
+            gamestate.rankings.push(lastPlayer.userId);
+        }
+        gamestate.status = "COMPLETED";
+    }
+
+    // Broadcast TOKEN_MOVED to all clients
+    broadcastToRoom(roomId, {
+        type: "TOKEN_MOVED",
+        userId: player.userId,
+        tokenId: token.id,
+        newPosition: token.position,
+        newStep: token.step,
+        killedToken,
+    });
+
+    // Update Turn & State
+    gamestate.currentDice = null;
+    gamestate.movableTokenIds = [];
+    gamestate.lastUpdated = Date.now();
+
+    if (gamestate.status === "COMPLETED") {
+        clearTurnTimer(roomId);
+        await saveGameState(gamestate);
+        await database.rooms.where({ id: roomId }).update({ status: "completed" });
+        broadcastToRoom(roomId, {
+            type: "GAME_OVER",
+            winnerId: gamestate.winnerId!,
+            rankings: gamestate.rankings,
+        });
+    } else {
+        if (bonusTurn && !player.hasFinished) {
+            gamestate.turnPhase = "ROLL_DICE";
+        } else {
+            gamestate.consecutiveSixes = 0;
+            gamestate.turnPhase = "ROLL_DICE";
+            gamestate.currentTurnUserId = getNextTurnUserId(gamestate, player.userId);
+        }
+
+        await saveGameState(gamestate);
+        broadcastToRoom(roomId, {
+            type: "TURN_CHANGED",
+            currentTurnUserId: gamestate.currentTurnUserId,
+            turnPhase: gamestate.turnPhase,
+        });
+        startTurnTimer(roomId);
+    }
+}
+
+export async function handleTurnTimeout(roomId: string) {
+    const room = socketconnections.get(roomId);
+    if (!room) {
+        clearTurnTimer(roomId);
+        return;
+    }
+
+    const gamestate = await getGameState(roomId);
+    if (!gamestate || gamestate.status !== "IN_PROGRESS") {
+        clearTurnTimer(roomId);
+        return;
+    }
+
+    const currentUserId = gamestate.currentTurnUserId;
+    const player = gamestate.players.find((p) => p.userId === currentUserId);
+    if (!player || player.hasFinished) {
+        gamestate.currentTurnUserId = getNextTurnUserId(gamestate, currentUserId);
+        gamestate.turnPhase = "ROLL_DICE";
+        gamestate.currentDice = null;
+        gamestate.movableTokenIds = [];
+        gamestate.consecutiveSixes = 0;
+        await saveGameState(gamestate);
+        broadcastToRoom(roomId, {
+            type: "TURN_CHANGED",
+            currentTurnUserId: gamestate.currentTurnUserId,
+            turnPhase: gamestate.turnPhase,
+        });
+        startTurnTimer(roomId);
+        return;
+    }
+
+    // Increment consecutive missed turns
+    player.missedTurns = (player.missedTurns ?? 0) + 1;
+
+    // Notify room admin if player hit 5 missed turns
+    if (player.missedTurns >= 5) {
+        const roomRecord = await database.rooms.where({ id: roomId }).first();
+        if (roomRecord?.adminId) {
+            const adminWs = room.get(roomRecord.adminId);
+            if (adminWs && adminWs.readyState === WebSocket.OPEN) {
+                adminWs.send(JSON.stringify({
+                    type: "PLAYER_INACTIVE_LIMIT",
+                    userId: currentUserId,
+                    name: player.name,
+                    missedCount: player.missedTurns,
+                }));
+            }
+        }
+    }
+
+    const config = getBoardConfig(gamestate.boardType);
+
+    if (gamestate.turnPhase === "ROLL_DICE") {
+        const dice_num = Math.floor(Math.random() * 6) + 1;
+        if (dice_num === 6) {
+            gamestate.consecutiveSixes += 1;
+            if (gamestate.consecutiveSixes === 3) {
+                gamestate.consecutiveSixes = 0;
+                gamestate.currentTurnUserId = getNextTurnUserId(gamestate, currentUserId);
+                gamestate.turnPhase = "ROLL_DICE";
+                gamestate.currentDice = null;
+                gamestate.movableTokenIds = [];
+                await saveGameState(gamestate);
+                broadcastToRoom(roomId, {
+                    type: "DICE_ROLLED",
+                    userId: currentUserId,
+                    dice: dice_num,
+                    movableTokenIds: [],
+                    autoPassedTurn: true,
+                });
+                broadcastToRoom(roomId, {
+                    type: "TURN_CHANGED",
+                    currentTurnUserId: gamestate.currentTurnUserId,
+                    turnPhase: gamestate.turnPhase,
+                });
+                startTurnTimer(roomId);
+                return;
+            }
+        } else {
+            gamestate.consecutiveSixes = 0;
+        }
+
+        gamestate.movableTokenIds = (player.tokens ?? [])
+            .filter((token) => {
+                if (token.status === "HOME") return false;
+                if (token.status === "BASE") return dice_num === 6;
+                return token.step + dice_num <= config.totalStepsToHome;
+            })
+            .map((token) => token.id);
+
+        gamestate.currentDice = dice_num;
+        gamestate.lastUpdated = Date.now();
+
+        if (gamestate.movableTokenIds.length === 0) {
+            gamestate.consecutiveSixes = 0;
+            gamestate.currentTurnUserId = getNextTurnUserId(gamestate, currentUserId);
+            gamestate.turnPhase = "ROLL_DICE";
+            gamestate.currentDice = null;
+            await saveGameState(gamestate);
+            broadcastToRoom(roomId, {
+                type: "DICE_ROLLED",
+                userId: currentUserId,
+                dice: dice_num,
+                movableTokenIds: [],
+                autoPassedTurn: true,
+            });
+            broadcastToRoom(roomId, {
+                type: "TURN_CHANGED",
+                currentTurnUserId: gamestate.currentTurnUserId,
+                turnPhase: gamestate.turnPhase,
+            });
+            startTurnTimer(roomId);
+            return;
+        }
+
+        gamestate.turnPhase = "MOVE_TOKEN";
+        await saveGameState(gamestate);
+        broadcastToRoom(roomId, {
+            type: "DICE_ROLLED",
+            userId: currentUserId,
+            dice: dice_num,
+            movableTokenIds: gamestate.movableTokenIds,
+            autoPassedTurn: false,
+        });
+
+        // Automatically move the first available token
+        const chosenTokenId = gamestate.movableTokenIds[0] as TokenId;
+        await executeMoveToken(roomId, gamestate, player, chosenTokenId, dice_num, config);
+    } else if (gamestate.turnPhase === "MOVE_TOKEN") {
+        if (gamestate.movableTokenIds.length > 0 && gamestate.currentDice !== null) {
+            const chosenTokenId = gamestate.movableTokenIds[0] as TokenId;
+            await executeMoveToken(roomId, gamestate, player, chosenTokenId, gamestate.currentDice, config);
+        } else {
+            gamestate.consecutiveSixes = 0;
+            gamestate.currentTurnUserId = getNextTurnUserId(gamestate, currentUserId);
+            gamestate.turnPhase = "ROLL_DICE";
+            gamestate.currentDice = null;
+            gamestate.movableTokenIds = [];
+            await saveGameState(gamestate);
+            broadcastToRoom(roomId, {
+                type: "TURN_CHANGED",
+                currentTurnUserId: gamestate.currentTurnUserId,
+                turnPhase: gamestate.turnPhase,
+            });
+            startTurnTimer(roomId);
+        }
+    }
 }
 
 wss.on("connection",(ws, req)=>{
@@ -53,6 +363,24 @@ wss.on("connection",(ws, req)=>{
         socketconnections.set(roomId,new Map())
     }
     socketconnections.get(roomId)!.set(userId,ws)
+
+    // Broadcast current connected lobby players to everyone in the room
+    broadcastLobbyUpdate(roomId).catch(console.error);
+
+    // Sync state if reconnecting to an ongoing game
+    getGameState(roomId).then(async (existingGame) => {
+        if (existingGame && existingGame.status === "IN_PROGRESS") {
+            const player = existingGame.players.find((p) => p.userId === userId);
+            if (player) {
+                player.isDisconnected = false;
+                await saveGameState(existingGame);
+            }
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "GAME_STATE", state: existingGame }));
+            }
+        }
+    }).catch(console.error);
+
     ws.on("message",async (msg:ClientMessage)=>{
         try{
             const message = JSON.parse(msg.toString())
@@ -88,6 +416,7 @@ wss.on("connection",(ws, req)=>{
                 const initialstate =await initGame(roomId,players,roomRecord.maxPlayers)
                 await database.rooms.where({ id: roomId }).update({ status: "in_progress" });
                 broadcastToRoom(roomId,{type:"GAME_STATE",state:initialstate})
+                startTurnTimer(roomId);
             }
 
 
@@ -105,6 +434,11 @@ wss.on("connection",(ws, req)=>{
                     return
                 }
                 else{
+                    const currentPlayer = gamestate.players.find((player) => player.userId === userId);
+                    if (currentPlayer) {
+                        currentPlayer.missedTurns = 0; // Reset consecutive missed turns on manual play
+                    }
+
                     const dice_num = Math.floor(Math.random() * 6) + 1
                     if(dice_num == 6){
                         gamestate.consecutiveSixes +=1
@@ -113,6 +447,12 @@ wss.on("connection",(ws, req)=>{
                             gamestate.currentTurnUserId = getNextTurnUserId(gamestate, userId);
                             await saveGameState(gamestate);
                             broadcastToRoom(roomId,{type:"DICE_ROLLED",userId,dice:dice_num,movableTokenIds:[],autoPassedTurn:true})
+                            broadcastToRoom(roomId, {
+                                type: "TURN_CHANGED",
+                                currentTurnUserId: gamestate.currentTurnUserId,
+                                turnPhase: gamestate.turnPhase,
+                            });
+                            startTurnTimer(roomId);
                             return
                         }
                     }
@@ -120,7 +460,6 @@ wss.on("connection",(ws, req)=>{
                         gamestate.consecutiveSixes = 0
                     }
                     const config = getBoardConfig(gamestate.boardType);
-                    const currentPlayer = gamestate.players.find((player) => player.userId === userId);
 
                     gamestate.movableTokenIds = (currentPlayer?.tokens ?? [])
                         .filter((token) => {
@@ -143,7 +482,13 @@ wss.on("connection",(ws, req)=>{
                             movableTokenIds: [],
                             autoPassedTurn: true,
                         });
+                        broadcastToRoom(roomId, {
+                            type: "TURN_CHANGED",
+                            currentTurnUserId: gamestate.currentTurnUserId,
+                            turnPhase: gamestate.turnPhase,
+                        });
                         await saveGameState(gamestate);
+                        startTurnTimer(roomId);
                         return;
                     }
 
@@ -156,6 +501,31 @@ wss.on("connection",(ws, req)=>{
                         movableTokenIds: gamestate.movableTokenIds,
                         autoPassedTurn: false,
                     });
+                    startTurnTimer(roomId);
+
+                    // If only one token is eligible to move, auto-move it after a brief pause
+                    if (gamestate.movableTokenIds.length === 1) {
+                        const autoTokenId = gamestate.movableTokenIds[0] as TokenId;
+                        setTimeout(async () => {
+                            try {
+                                const latestState = await getGameState(roomId);
+                                if (
+                                    latestState &&
+                                    latestState.turnPhase === "MOVE_TOKEN" &&
+                                    latestState.currentTurnUserId === userId &&
+                                    latestState.movableTokenIds.includes(autoTokenId)
+                                ) {
+                                    const p = latestState.players.find((pl) => pl.userId === userId);
+                                    if (p) {
+                                        const cfg = getBoardConfig(latestState.boardType);
+                                        await executeMoveToken(roomId, latestState, p, autoTokenId, latestState.currentDice!, cfg);
+                                    }
+                                }
+                            } catch (err) {
+                                console.error(`Error auto-moving single token in room ${roomId}:`, err);
+                            }
+                        }, 1200);
+                    }
                 }
                 
             }
@@ -181,98 +551,82 @@ wss.on("connection",(ws, req)=>{
                 }
 
                 const player = gamestate.players.find((p) => p.userId === userId);
-                const token = player?.tokens.find((t) => t.id === tokenId);
-                if (!player || !token) {
-                    ws.send(JSON.stringify({ type: "ERROR", message: "Token not found" }));
+                if (!player) {
+                    ws.send(JSON.stringify({ type: "ERROR", message: "Player not found" }));
                     return;
                 }
 
+                player.missedTurns = 0; // Reset consecutive missed turns on manual play
                 const dice = gamestate.currentDice!;
                 const config = getBoardConfig(gamestate.boardType);
-                let killedToken: { userId: string; tokenId: TokenId } | undefined = undefined;
-                let bonusTurn = dice === 6;
 
-                // Move token
-                const startPos = config.startPositions[player.color] ?? 0;
-                if (token.status === "BASE") {
-                    token.status = "ACTIVE";
-                    token.step = 1;
-                    token.position = startPos;
-                } else if (token.status === "ACTIVE") {
-                    token.step += dice;
-                    if (token.step === config.totalStepsToHome) {
-                        token.status = "HOME";
-                        token.position = -1;
-                        bonusTurn = true; // Bonus turn for moving a token into HOME!
-                    } else {
-                        const commonTrackSteps = config.totalCommonCells - 1;
-                        if (token.step <= commonTrackSteps) {
-                            token.position = (startPos + (token.step - 1)) % config.totalCommonCells;
+                await executeMoveToken(roomId, gamestate, player, tokenId, dice, config);
+            }
+            else if(message.type == "KICK_PLAYER"){
+                const room = socketconnections.get(roomId);
+                if(!room) return;
+                const roomRecord = await database.rooms.where({ id: roomId }).first();
+                if(!roomRecord){
+                    ws.send(JSON.stringify({ type: "ERROR", message: "Room not found" }));
+                    return;
+                }
+                if(roomRecord.adminId !== userId){
+                    ws.send(JSON.stringify({ type: "ERROR", message: "Only the room host can kick players" }));
+                    return;
+                }
 
-                            // Check for captures on non-safe squares
-                            const isSafe = config.safePositions.includes(token.position);
-                            if (!isSafe) {
-                                for (const opponent of gamestate.players) {
-                                    if (opponent.userId === userId) continue;
-                                    for (const oppToken of opponent.tokens) {
-                                        if (oppToken.status === "ACTIVE" && oppToken.position === token.position) {
-                                            oppToken.status = "BASE";
-                                            oppToken.step = 0;
-                                            oppToken.position = -1;
-                                            killedToken = { userId: opponent.userId, tokenId: oppToken.id };
-                                            bonusTurn = true; // Bonus turn for capturing an opponent token!
-                                            break;
-                                        }
-                                    }
-                                    if (killedToken) break;
-                                }
-                            }
-                        } else {
-                            // On home path
-                            token.position = 100 + (token.step - commonTrackSteps);
-                        }
+                const gamestate = await getGameState(roomId);
+                if(!gamestate || gamestate.status !== "IN_PROGRESS"){
+                    ws.send(JSON.stringify({ type: "ERROR", message: "Game is not in progress" }));
+                    return;
+                }
+
+                const targetUserId = message.targetUserId;
+                if(targetUserId === userId){
+                    ws.send(JSON.stringify({ type: "ERROR", message: "Cannot kick yourself" }));
+                    return;
+                }
+
+                const targetPlayer = gamestate.players.find((p) => p.userId === targetUserId);
+                if(!targetPlayer || targetPlayer.hasFinished){
+                    ws.send(JSON.stringify({ type: "ERROR", message: "Player not found or already finished" }));
+                    return;
+                }
+
+                // Mark player as finished and reset active tokens to base
+                targetPlayer.hasFinished = true;
+                for(const t of targetPlayer.tokens){
+                    if(t.status === "ACTIVE"){
+                        t.status = "BASE";
+                        t.step = 0;
+                        t.position = -1;
                     }
                 }
 
-                // Check if this player has finished
-                const allHome = player.tokens.every((t) => t.status === "HOME");
-                if (allHome && !player.hasFinished) {
-                    player.hasFinished = true;
-                    player.rank = gamestate.rankings.length + 1;
-                    gamestate.rankings.push(userId);
-                    if (!gamestate.winnerId) {
-                        gamestate.winnerId = userId;
-                    }
+                // Close socket of kicked player if present
+                const targetWs = room.get(targetUserId);
+                if(targetWs){
+                    targetWs.send(JSON.stringify({ type: "ERROR", message: "You were removed from the game by the host" }));
+                    targetWs.close();
+                    room.delete(targetUserId);
                 }
 
-                // Check Game Over (if 1 or fewer players remain unfinished)
-                const unfinishedPlayers = gamestate.players.filter((p) => !p.hasFinished);
-                if (unfinishedPlayers.length <= 1) {
-                    const lastPlayer = unfinishedPlayers[0];
-                    if (lastPlayer) {
+                broadcastToRoom(roomId, { type: "PLAYER_KICKED", userId: targetUserId });
+
+                // Check if remaining active players is <= 1
+                const remainingActive = gamestate.players.filter((p) => !p.hasFinished);
+                if(remainingActive.length <= 1){
+                    const lastPlayer = remainingActive[0];
+                    if(lastPlayer){
                         lastPlayer.hasFinished = true;
                         lastPlayer.rank = gamestate.rankings.length + 1;
                         gamestate.rankings.push(lastPlayer.userId);
+                        if(!gamestate.winnerId){
+                            gamestate.winnerId = lastPlayer.userId;
+                        }
                     }
                     gamestate.status = "COMPLETED";
-                }
-
-                // Broadcast TOKEN_MOVED to all clients
-                broadcastToRoom(roomId, {
-                    type: "TOKEN_MOVED",
-                    userId,
-                    tokenId: token.id,
-                    newPosition: token.position,
-                    newStep: token.step,
-                    killedToken,
-                });
-
-                // Update Turn & State
-                gamestate.currentDice = null;
-                gamestate.movableTokenIds = [];
-                gamestate.lastUpdated = Date.now();
-
-                if (gamestate.status === "COMPLETED") {
+                    clearTurnTimer(roomId);
                     await saveGameState(gamestate);
                     await database.rooms.where({ id: roomId }).update({ status: "completed" });
                     broadcastToRoom(roomId, {
@@ -280,22 +634,27 @@ wss.on("connection",(ws, req)=>{
                         winnerId: gamestate.winnerId!,
                         rankings: gamestate.rankings,
                     });
-                } else {
-                    if (bonusTurn && !player.hasFinished) {
-                        gamestate.turnPhase = "ROLL_DICE";
-                    } else {
-                        gamestate.consecutiveSixes = 0;
-                        gamestate.turnPhase = "ROLL_DICE";
-                        gamestate.currentTurnUserId = getNextTurnUserId(gamestate, userId);
-                    }
+                    return;
+                }
 
-                    await saveGameState(gamestate);
+                // If it was the kicked player's turn, advance turn
+                if(gamestate.currentTurnUserId === targetUserId){
+                    gamestate.currentTurnUserId = getNextTurnUserId(gamestate, targetUserId);
+                    gamestate.turnPhase = "ROLL_DICE";
+                    gamestate.currentDice = null;
+                    gamestate.movableTokenIds = [];
+                    gamestate.consecutiveSixes = 0;
                     broadcastToRoom(roomId, {
                         type: "TURN_CHANGED",
                         currentTurnUserId: gamestate.currentTurnUserId,
                         turnPhase: gamestate.turnPhase,
                     });
+                    startTurnTimer(roomId);
                 }
+
+                gamestate.lastUpdated = Date.now();
+                await saveGameState(gamestate);
+                broadcastToRoom(roomId, { type: "GAME_STATE", state: gamestate });
             }
             else{
                 ws.send("invalid request")
@@ -307,13 +666,25 @@ wss.on("connection",(ws, req)=>{
         }
     })
 
-    ws.on("close",()=>{
+    ws.on("close", async () => {
         const room = socketconnections.get(roomId);
         if (room) {
             room.delete(userId);
             if (room.size === 0) {
                 socketconnections.delete(roomId);
+                clearTurnTimer(roomId);
+            } else {
+                broadcastLobbyUpdate(roomId).catch(console.error);
             }
+        }
+        const gamestate = await getGameState(roomId);
+        if (gamestate && gamestate.status === "IN_PROGRESS") {
+            const player = gamestate.players.find((p) => p.userId === userId);
+            if (player) {
+                player.isDisconnected = true;
+                await saveGameState(gamestate);
+            }
+            broadcastToRoom(roomId, { type: "PLAYER_LEFT", userId });
         }
     })
 })

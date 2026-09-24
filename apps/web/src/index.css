@@ -1122,6 +1122,11 @@ body {
   align-items: center;
   justify-content: center;
   z-index: 20;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.ludo-token-wrapper.token-elevated {
+  z-index: 150 !important;
 }
 
 .ludo-token-btn {
@@ -1143,10 +1148,10 @@ body {
 
 @keyframes bounce-token {
   0%, 100% {
-    transform: translateY(0) scale(1);
+    transform: translateY(0) scale(1.18);
   }
   50% {
-    transform: translateY(-8px) scale(1.15);
+    transform: translateY(-8px) scale(1.36);
   }
 }
 
@@ -1162,12 +1167,13 @@ body {
 .movable-token {
   animation: bounce-token 0.7s ease-in-out infinite, token-glow-pulse 1.2s ease-in-out infinite;
   cursor: pointer;
-  z-index: 40;
+  z-index: 160 !important;
   border-color: #fef08a !important;
+  filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.75));
 }
 
 .movable-token:hover {
-  transform: scale(1.3) translateY(-4px) !important;
+  transform: scale(1.4) translateY(-8px) !important;
 }
 
 /* Box-by-box Step Hopping Animation */

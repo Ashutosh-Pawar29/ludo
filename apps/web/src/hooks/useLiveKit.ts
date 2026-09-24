@@ -185,8 +185,17 @@ export function useLiveKit(
 
         let wsUrl = serverUrl || LIVEKIT_SERVER_URL;
         if (!wsUrl) {
-          wsUrl = `ws://${window.location.hostname}:7880`;
+          wsUrl = window.location.protocol === "https:"
+            ? "wss://game-ashu.duckdns.org"
+            : `ws://${window.location.hostname}:7880`;
         }
+
+        // If the web app is running over HTTPS (e.g. on Vercel), browsers strictly block
+        // insecure ws:// connections. Ensure we use the secure SSL domain on wss://
+        if (window.location.protocol === "https:" && (wsUrl.startsWith("ws://") || wsUrl.includes("16.192.187.29"))) {
+          wsUrl = "wss://game-ashu.duckdns.org";
+        }
+
         if (wsUrl.includes("localhost") || wsUrl.includes("127.0.0.1")) {
           if (LIVEKIT_SERVER_URL) {
             wsUrl = LIVEKIT_SERVER_URL;

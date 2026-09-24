@@ -466,50 +466,126 @@ export const LudoBoard: React.FC<LudoBoardProps> = ({
         </div>
 
         {/* 6. TOKENS ON BOARD */}
-        {tokensOnBoard.map((item) => {
-          const theme = PLAYER_COLORS[item.player.color] ?? PLAYER_COLORS.RED;
-          const cellKey = `${item.row}-${item.col}`;
-          const totalInCell = cellOccupancy[cellKey] || 1;
-          const currentOffsetIndex = cellCurrentOffset[cellKey] || 0;
-          cellCurrentOffset[cellKey] = currentOffsetIndex + 1;
+        {(() => {
+          // Pre-group tokens by cell to calculate optimal layout and stacking
+          const tokensByCell: Record<string, typeof tokensOnBoard> = {};
+          const cellHasMovable: Record<string, boolean> = {};
 
-          // Compute stacking shift if multiple tokens land on the same tile
-          const offsetX = totalInCell > 1 ? (currentOffsetIndex % 2) * 6 - 3 : 0;
-          const offsetY = totalInCell > 1 ? Math.floor(currentOffsetIndex / 2) * 6 - 3 : 0;
+          tokensOnBoard.forEach((t) => {
+            const cellKey = `${t.row}-${t.col}`;
+            if (!tokensByCell[cellKey]) tokensByCell[cellKey] = [];
+            tokensByCell[cellKey].push(t);
+            if (t.isMovable) {
+              cellHasMovable[cellKey] = true;
+            }
+          });
 
-          return (
-            <div
-              key={`${item.player.userId}-${item.tokenId}-${item.effectiveStep}`}
-              className="ludo-token-wrapper"
-              style={{
-                gridColumnStart: item.col + 1,
-                gridRowStart: item.row + 1,
-                transform: `translate(${offsetX}px, ${offsetY}px)`,
-              }}
-            >
-              <button
-                disabled={!item.isMovable}
-                onClick={() => onMoveToken(item.tokenId)}
+          return tokensOnBoard.map((item) => {
+            const theme = PLAYER_COLORS[item.player.color] ?? PLAYER_COLORS.RED;
+            const cellKey = `${item.row}-${item.col}`;
+            const cellTokens = tokensByCell[cellKey] || [item];
+            const totalInCell = cellTokens.length;
+            const tokenIndex = cellTokens.indexOf(item);
+            const isAnyMovableInCell = Boolean(cellHasMovable[cellKey]);
+
+            // Layout offsets for multiple tokens in the same cell
+            let offsetX = 0;
+            let offsetY = 0;
+            let scale = 1;
+
+            if (totalInCell === 2) {
+              scale = 0.85;
+              if (tokenIndex === 0) {
+                offsetX = -7;
+                offsetY = -5;
+              } else {
+                offsetX = 7;
+                offsetY = 5;
+              }
+            } else if (totalInCell === 3) {
+              scale = 0.78;
+              if (tokenIndex === 0) {
+                offsetX = -7;
+                offsetY = -6;
+              } else if (tokenIndex === 1) {
+                offsetX = 7;
+                offsetY = -6;
+              } else {
+                offsetX = 0;
+                offsetY = 6;
+              }
+            } else if (totalInCell >= 4) {
+              scale = 0.74;
+              const positions = [
+                [-7, -7],
+                [7, -7],
+                [-7, 7],
+                [7, 7],
+              ];
+              const pos = positions[tokenIndex % 4] || [0, 0];
+              offsetX = pos[0];
+              offsetY = pos[1];
+            }
+
+            // If this token is movable, pop it to center with high elevation!
+            if (item.isMovable) {
+              offsetY = -7;
+              offsetX = 0;
+            }
+
+            // Elevation: movable token sits on top (z-index: 150), hopping token (120), static tokens (20-30)
+            const zIndex = item.isMovable
+              ? 150
+              : item.isHopping
+              ? 120
+              : 20 + tokenIndex;
+
+            // If a cell has a movable token for the player whose turn it is,
+            // set pointer-events: none on other unmovable tokens in this cell
+            // so any click/tap in the cell registers directly on the movable token!
+            const pointerEvents = isAnyMovableInCell && !item.isMovable ? "none" : "auto";
+
+            return (
+              <div
+                key={`${item.player.userId}-${item.tokenId}-${item.effectiveStep}`}
+                className={`ludo-token-wrapper ${item.isMovable ? "token-elevated" : ""}`}
                 style={{
-                  backgroundColor: theme.bg,
-                  color: "#ffffff",
-                  boxShadow: item.isMovable
-                    ? `0 0 16px ${theme.glow}, inset 0 2px 4px rgba(255,255,255,0.4)`
-                    : item.isHopping
-                    ? `0 0 20px ${theme.glow}`
-                    : `0 3px 8px rgba(0,0,0,0.6), inset 0 1px 2px rgba(255,255,255,0.25)`,
-                  borderColor: item.isMovable ? "#fef08a" : theme.border,
+                  gridColumnStart: item.col + 1,
+                  gridRowStart: item.row + 1,
+                  transform: `translate(${offsetX}px, ${offsetY}px)`,
+                  zIndex,
+                  pointerEvents,
                 }}
-                className={`ludo-token-btn ${item.isMovable ? "movable-token" : ""} ${
-                  item.isHopping ? "token-hopping" : ""
-                }`}
-                title={`Token ${item.tokenId + 1} (${item.player.name})`}
               >
-                {item.tokenId + 1}
-              </button>
-            </div>
-          );
-        })}
+                <button
+                  disabled={!item.isMovable}
+                  onClick={() => onMoveToken(item.tokenId)}
+                  style={{
+                    backgroundColor: theme.bg,
+                    color: "#ffffff",
+                    transform: item.isMovable ? undefined : `scale(${scale})`,
+                    boxShadow: item.isMovable
+                      ? `0 0 18px ${theme.glow}, inset 0 2px 4px rgba(255,255,255,0.4)`
+                      : item.isHopping
+                      ? `0 0 20px ${theme.glow}`
+                      : `0 3px 8px rgba(0,0,0,0.6), inset 0 1px 2px rgba(255,255,255,0.25)`,
+                    borderColor: item.isMovable ? "#fef08a" : theme.border,
+                  }}
+                  className={`ludo-token-btn ${item.isMovable ? "movable-token" : ""} ${
+                    item.isHopping ? "token-hopping" : ""
+                  }`}
+                  title={
+                    item.isMovable
+                      ? `Click to move Token ${item.tokenId + 1} (${item.player.name})`
+                      : `Token ${item.tokenId + 1} (${item.player.name})`
+                  }
+                >
+                  {item.tokenId + 1}
+                </button>
+              </div>
+            );
+          });
+        })()}
       </div>
 
       {/* Extra Base Yards for 5 and 6 Player Games */}

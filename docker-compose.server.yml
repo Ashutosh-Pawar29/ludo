@@ -57,7 +57,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ludo}
       JWT_SECRET: ${JWT_SECRET:-ludo_super_secret_jwt_key_ec2_2026}
       REFRESHTOKEN_JWT_SECRET: ${REFRESHTOKEN_JWT_SECRET:-ludo_super_secret_refresh_jwt_key_ec2_2026}
-      LIVEKIT_URL: ws://${EC2_PUBLIC_IP:-localhost}:7880
+      LIVEKIT_URL: ${LIVEKIT_URL:-wss://game-ashu.duckdns.org}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
     depends_on:

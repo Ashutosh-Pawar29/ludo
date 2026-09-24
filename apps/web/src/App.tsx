@@ -92,21 +92,32 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Fetch current user details if token exists
+  // Validate session token on startup and fetch fresh user profile
   useEffect(() => {
-    if (token && (!user || !user.id)) {
-      fetch(getApiUrl("/api/users/me"), {
-        headers: { token },
+    if (!token) return;
+
+    fetch(getApiUrl("/api/users/me"), {
+      headers: { token },
+    })
+      .then(async (res) => {
+        if (res.status === 401 || res.status === 404) {
+          console.warn("Session expired or user deleted, clearing local session");
+          handleLogout();
+          return null;
+        }
+        return res.json().catch(() => null);
       })
-        .then((res) => res.json())
-        .then((data) => {
-          if (data?.id) {
-            setUser(data);
-            localStorage.setItem("ludo_user", JSON.stringify(data));
-          }
-        })
-        .catch(console.error);
-    }
+      .then((data) => {
+        if (data?.id) {
+          setUser(data);
+          localStorage.setItem("ludo_user", JSON.stringify(data));
+        } else if (data === "invalid token" || data?.error === "invalid_token" || data?.error === "user_not_found") {
+          handleLogout();
+        }
+      })
+      .catch((err) => {
+        console.warn("Could not verify session with backend:", err);
+      });
   }, [token]);
 
   // Fallback lobby polling for player count & room info
@@ -523,6 +534,7 @@ export const App: React.FC = () => {
             lobbyPlayers={lobbyPlayers}
             onStartGame={handleStartGame}
             isHost={isHost}
+            onLogout={handleLogout}
           />
         ) : (
           /* LIVE GAME ARENA */

@@ -14,6 +14,7 @@ interface LobbyProps {
   lobbyPlayers?: { userId: string; name: string }[];
   onStartGame?: () => void;
   isHost?: boolean;
+  onLogout?: () => void;
 }
 
 export const Lobby: React.FC<LobbyProps> = ({
@@ -27,6 +28,7 @@ export const Lobby: React.FC<LobbyProps> = ({
   lobbyPlayers = [],
   onStartGame,
   isHost = false,
+  onLogout,
 }) => {
   const [maxPlayers, setMaxPlayers] = useState(2);
   const [joinRoomInput, setJoinRoomInput] = useState("");
@@ -46,18 +48,33 @@ export const Lobby: React.FC<LobbyProps> = ({
         },
         body: JSON.stringify({
           id: user.id,
-          maxPlayers,
+          maxPlayers: Number(maxPlayers),
         }),
       });
 
-      const data = await res.json();
-      if (data.room?.id) {
+      let data: any = null;
+      try {
+        data = await res.json();
+      } catch {
+        const text = await res.text().catch(() => "");
+        data = { message: text };
+      }
+
+      if (res.status === 401 || data?.error === "invalid_token" || data?.error === "user_not_found" || data?.message === "invalid token") {
+        setError("Session expired. Signing out to allow fresh login...");
+        if (onLogout) {
+          setTimeout(() => onLogout(), 1000);
+        }
+        return;
+      }
+
+      if (res.ok && data?.room?.id) {
         onEnterGame(data.room.id, true);
       } else {
-        setError(data.message || "Failed to create room");
+        setError(data?.message || data?.error || "Failed to create room");
       }
-    } catch (err) {
-      setError("Network error connecting to backend");
+    } catch (err: any) {
+      setError(err?.message || "Network error connecting to backend");
     } finally {
       setLoading(false);
     }
@@ -92,14 +109,29 @@ export const Lobby: React.FC<LobbyProps> = ({
         }),
       });
 
-      const data = await res.json();
-      if (data.player || data.msg === "player joined") {
+      let data: any = null;
+      try {
+        data = await res.json();
+      } catch {
+        const text = await res.text().catch(() => "");
+        data = { message: text };
+      }
+
+      if (res.status === 401 || data?.error === "invalid_token" || data?.error === "user_not_found" || data?.message === "invalid token") {
+        setError("Session expired. Signing out to allow fresh login...");
+        if (onLogout) {
+          setTimeout(() => onLogout(), 1000);
+        }
+        return;
+      }
+
+      if (res.ok && (data.player || data.msg === "player joined" || data.message === "player joined")) {
         onEnterGame(roomId, false);
       } else {
-        setError(typeof data === "string" ? data : data.message || "Could not join room");
+        setError(data?.message || data?.error || "Could not join room");
       }
-    } catch (err) {
-      setError("Network error joining room");
+    } catch (err: any) {
+      setError(err?.message || "Network error joining room");
     } finally {
       setLoading(false);
     }

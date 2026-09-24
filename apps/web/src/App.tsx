@@ -77,7 +77,6 @@ export const App: React.FC = () => {
     isCameraEnabled,
     toggleMicrophone,
     toggleCamera,
-    getParticipantMedia,
   } = useLiveKit(roomId, token, Boolean(token && roomId));
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -556,7 +555,6 @@ export const App: React.FC = () => {
                     </span>
                     <div className="mobile-players-mini-avatars">
                       {gameState.players.map((p) => {
-                        const pMedia = getParticipantMedia(p.userId);
                         return (
                           <span
                             key={p.userId}
@@ -564,7 +562,6 @@ export const App: React.FC = () => {
                             title={`${p.name} (${p.color})`}
                           >
                             {p.name.slice(0, 1).toUpperCase()}
-                            {pMedia?.isSpeaking && <span className="mini-speaking-ring" />}
                           </span>
                         );
                       })}
@@ -596,7 +593,6 @@ export const App: React.FC = () => {
                     isCurrentTurn={gameState.currentTurnUserId === p.userId}
                     isHost={isHost}
                     isSelf={p.userId === user.id}
-                    mediaInfo={getParticipantMedia(p.userId)}
                   />
                 ))}
               </div>
@@ -617,7 +613,6 @@ export const App: React.FC = () => {
                 onMoveToken={handleMoveToken}
                 myUserId={user.id}
                 boardType={gameState.boardType}
-                getParticipantMedia={getParticipantMedia}
               />
             </div>
 

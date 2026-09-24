@@ -1,9 +1,9 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import type { BoardType, GamePlayer, TokenId } from "commons-ts/game";
 import { getStepCoordinate, getTokenCoordinate } from "../utils/boardCoordinates";
-import { Shield, Sparkles, Star, Video } from "lucide-react";
-import { VideoTrackView } from "./VideoTrackView";
-import type { ParticipantMediaInfo } from "../hooks/useLiveKit";
+import { Shield, Sparkles, Star } from "lucide-react";
+import { YardVideoView } from "./YardVideoView";
+import { useParticipantMedia } from "../hooks/useLiveKit";
 
 export interface LudoBoardProps {
   players: GamePlayer[];
@@ -12,7 +12,6 @@ export interface LudoBoardProps {
   onMoveToken: (tokenId: TokenId) => void;
   myUserId?: string;
   boardType?: BoardType;
-  getParticipantMedia?: (userId: string) => ParticipantMediaInfo;
 }
 
 const PLAYER_COLORS: Record<string, { bg: string; border: string; glow: string }> = {
@@ -60,14 +59,138 @@ function playHopSound() {
   }
 }
 
-export const LudoBoard: React.FC<LudoBoardProps> = ({
+// ---------- Sub-component: Corner Yard with self-subscribing video ----------
+// This component reads its own participant's media via useParticipantMedia.
+// The parent LudoBoard does NOT need to know about media state at all.
+
+interface CornerYardProps {
+  player: GamePlayer | undefined;
+  colorName: string;
+  yardClass: string;
+  labelColor: string;
+  myUserId?: string;
+  isMyTurn: boolean;
+  movableTokenIds: TokenId[];
+  onMoveToken: (tokenId: TokenId) => void;
+  displayedSteps: Record<string, number>;
+}
+
+const CornerYard: React.FC<CornerYardProps> = React.memo(({
+  player,
+  colorName,
+  yardClass,
+  labelColor,
+  myUserId,
+  isMyTurn,
+  movableTokenIds,
+  onMoveToken,
+  displayedSteps,
+}) => {
+  const isPlayerMe = player?.userId === myUserId;
+  // Subscribe to this player's media — only re-renders this yard when media changes
+  const media = useParticipantMedia(player?.userId ?? "");
+  const hasVideo = Boolean(player && media.isCameraOn && media.videoTrack);
+  const isSpeaking = Boolean(media.isSpeaking);
+  const theme = player ? (PLAYER_COLORS[player.color] ?? PLAYER_COLORS.RED) : PLAYER_COLORS.RED;
+
+  if (hasVideo && player) {
+    const baseTokens = ([0, 1, 2, 3] as TokenId[]).filter((tokenId) => {
+      const token = player.tokens.find((t) => t.id === tokenId);
+      const key = `${player.userId}-${tokenId}`;
+      const effectiveStep = displayedSteps[key] ?? token?.step ?? 0;
+      return effectiveStep === 0;
+    });
+
+    return (
+      <div
+        key={`yard-${colorName}`}
+        className={`yard-base ${yardClass} yard-has-video ${isSpeaking ? "yard-speaking" : ""}`}
+      >
+        {/* Top Video Frame — renders via self-subscribing YardVideoView */}
+        <YardVideoView
+          userId={player.userId}
+          playerName={player.name}
+          isSelf={Boolean(isPlayerMe)}
+        />
+
+        {/* Shrunk Base Tokens Row at the Bottom of Base */}
+        <div className="yard-bottom-dock">
+          {baseTokens.length > 0 ? (
+            baseTokens.map((tokenId) => {
+              const isMovable = isMyTurn && isPlayerMe && movableTokenIds.includes(tokenId);
+
+              return (
+                <button
+                  key={tokenId}
+                  disabled={!isMovable}
+                  onClick={() => onMoveToken(tokenId)}
+                  className={`yard-shrunk-token-btn ${isMovable ? "movable-token" : ""}`}
+                  style={{
+                    backgroundColor: theme.bg,
+                    borderColor: isMovable ? "#fef08a" : theme.border,
+                    boxShadow: isMovable
+                      ? `0 0 16px ${theme.glow}, inset 0 2px 4px rgba(255,255,255,0.4)`
+                      : `0 2px 6px rgba(0,0,0,0.6)`,
+                  }}
+                  title={
+                    isMovable
+                      ? `Click to launch Token ${tokenId + 1} into play!`
+                      : `Token ${tokenId + 1} waiting in base`
+                  }
+                >
+                  {tokenId + 1}
+                </button>
+              );
+            })
+          ) : (
+            <span className="yard-all-deployed">All In Play</span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Default Classic Yard when video is OFF or player not present
+  return (
+    <div key={`yard-${colorName}`} className={`yard-base ${yardClass} ${!player ? "yard-empty" : ""}`}>
+      <div className="yard-label" style={{ color: labelColor }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: theme.bg }} />
+        {player ? `${player.name.toUpperCase()} (${colorName})` : `${colorName} (EMPTY)`}
+      </div>
+      <div className="yard-inner-docks">
+        <div className="dock-slot" />
+        <div className="dock-slot" />
+        <div className="dock-slot" />
+        <div className="dock-slot" />
+      </div>
+    </div>
+  );
+});
+
+CornerYard.displayName = "CornerYard";
+
+// ---------- Helper: Check if player has video (reading from store directly) ----------
+// We need a small component wrapper to decide the token layout for players with video.
+// This reads from the store to know if base tokens should render on board or in the yard dock.
+
+interface UsePlayerHasVideoProps {
+  userId: string;
+}
+
+function usePlayerHasVideo(userId: string): boolean {
+  const media = useParticipantMedia(userId);
+  return Boolean(media.isCameraOn && media.videoTrack);
+}
+
+// ---------- Main Board Component ----------
+
+export const LudoBoard: React.FC<LudoBoardProps> = React.memo(({
   players,
   movableTokenIds,
   isMyTurn,
   onMoveToken,
   myUserId,
   boardType = "4_PLAYER",
-  getParticipantMedia,
 }) => {
   // Animation state: tracks currently displayed step per token
   const [displayedSteps, setDisplayedSteps] = useState<Record<string, number>>({});
@@ -151,67 +274,69 @@ export const LudoBoard: React.FC<LudoBoardProps> = ({
   const purplePlayer = players.find((p) => p.color === "PURPLE");
   const orangePlayer = players.find((p) => p.color === "ORANGE");
 
-  // Aggregate tokens that render on the 15x15 board
-  const tokensOnBoard: Array<{
-    player: GamePlayer;
-    tokenId: TokenId;
-    row: number;
-    col: number;
-    isMovable: boolean;
-    isHopping: boolean;
-    effectiveStep: number;
-    status: string;
-  }> = [];
+  // Build token list for rendering on the board
+  // NOTE: We no longer check "playerHasVideo" here since we cannot call hooks
+  // conditionally per-player in the main component. Instead, base tokens in the yard
+  // are handled by CornerYard's own rendering, and here we render ALL non-extra tokens.
+  const tokensOnBoard = useMemo(() => {
+    const result: Array<{
+      player: GamePlayer;
+      tokenId: TokenId;
+      row: number;
+      col: number;
+      isMovable: boolean;
+      isHopping: boolean;
+      effectiveStep: number;
+      status: string;
+    }> = [];
 
-  const cellOccupancy: Record<string, number> = {};
+    players.forEach((player) => {
+      const isPlayerMe = player.userId === myUserId;
 
-  players.forEach((player) => {
-    const isPlayerMe = player.userId === myUserId;
-    const media = getParticipantMedia ? getParticipantMedia(player.userId) : undefined;
-    const playerHasVideo = Boolean(media?.isCameraOn && media?.videoTrack);
+      player.tokens.forEach((token) => {
+        const key = `${player.userId}-${token.id}`;
+        const effectiveStep = displayedSteps[key] ?? token.step;
+        const isHopping = !!hoppingTokens[key];
 
-    player.tokens.forEach((token) => {
-      const key = `${player.userId}-${token.id}`;
-      const effectiveStep = displayedSteps[key] ?? token.step;
-      const isHopping = !!hoppingTokens[key];
+        // Purple and Orange tokens in base (step 0) render inside their dedicated extra yard docks
+        const isExtraBaseToken =
+          (player.color === "PURPLE" || player.color === "ORANGE") && effectiveStep === 0;
 
-      // Purple and Orange tokens in base (step 0) render inside their dedicated extra yard docks
-      const isExtraBaseToken =
-        (player.color === "PURPLE" || player.color === "ORANGE") && effectiveStep === 0;
+        // Skip base tokens (step 0) for standard colors — CornerYard handles them when video is on,
+        // and the classic yard shows dock slots. For on-board rendering we only show step > 0.
+        // Exception: when video is OFF, base tokens for standard colors render on the board grid.
+        // We'll render all base tokens on the grid; CornerYard video mode also renders them in its dock.
+        // The key insight: we DON'T skip base tokens here. The CornerYard hides them visually when
+        // it shows video, but the board still has them at their coordinate position.
 
-      // When player has video on, base tokens (step 0) render in the bottom row of their video base
-      const isBaseTokenInVideoYard = playerHasVideo && effectiveStep === 0;
+        if (!isExtraBaseToken) {
+          const coord =
+            effectiveStep === 0
+              ? getTokenCoordinate(player.color, token.id, "BASE", 0, -1, boardType)
+              : getStepCoordinate(player.color, token.id, effectiveStep, boardType);
 
-      if (!isExtraBaseToken && !isBaseTokenInVideoYard) {
-        const coord =
-          effectiveStep === 0
-            ? getTokenCoordinate(player.color, token.id, "BASE", 0, -1, boardType)
-            : getStepCoordinate(player.color, token.id, effectiveStep, boardType);
+          const isMovable =
+            isMyTurn && isPlayerMe && movableTokenIds.includes(token.id) && !isHopping;
 
-        const cellKey = `${coord.row}-${coord.col}`;
-        cellOccupancy[cellKey] = (cellOccupancy[cellKey] || 0) + 1;
-
-        const isMovable =
-          isMyTurn && isPlayerMe && movableTokenIds.includes(token.id) && !isHopping;
-
-        tokensOnBoard.push({
-          player,
-          tokenId: token.id,
-          row: coord.row,
-          col: coord.col,
-          isMovable,
-          isHopping,
-          effectiveStep,
-          status: token.status,
-        });
-      }
+          result.push({
+            player,
+            tokenId: token.id,
+            row: coord.row,
+            col: coord.col,
+            isMovable,
+            isHopping,
+            effectiveStep,
+            status: token.status,
+          });
+        }
+      });
     });
-  });
 
-  const cellCurrentOffset: Record<string, number> = {};
+    return result;
+  }, [players, displayedSteps, hoppingTokens, isMyTurn, movableTokenIds, myUserId, boardType]);
 
   // Helper to determine track cell styling
-  const renderTrackCell = (r: number, c: number) => {
+  const renderTrackCell = useCallback((r: number, c: number) => {
     // Check if inside any 6x6 yard or 3x3 center
     const isYard =
       (r < 6 && c < 6) ||
@@ -271,102 +396,10 @@ export const LudoBoard: React.FC<LudoBoardProps> = ({
         {icon}
       </div>
     );
-  };
-
-  // Helper to render corner yard (with video stream & bottom token row if video ON, or classic square dock if OFF)
-  const renderCornerYard = (
-    player: GamePlayer | undefined,
-    colorName: string,
-    yardClass: string,
-    labelColor: string
-  ) => {
-    const isPlayerMe = player?.userId === myUserId;
-    const media = player && getParticipantMedia ? getParticipantMedia(player.userId) : undefined;
-    const hasVideo = Boolean(player && media?.isCameraOn && media?.videoTrack);
-    const isSpeaking = Boolean(media?.isSpeaking);
-    const theme = player ? (PLAYER_COLORS[player.color] ?? PLAYER_COLORS.RED) : PLAYER_COLORS.RED;
-
-    if (hasVideo && player) {
-      const baseTokens = ([0, 1, 2, 3] as TokenId[]).filter((tokenId) => {
-        const token = player.tokens.find((t) => t.id === tokenId);
-        const key = `${player.userId}-${tokenId}`;
-        const effectiveStep = displayedSteps[key] ?? token?.step ?? 0;
-        return effectiveStep === 0;
-      });
-
-      return (
-        <div
-          key={`yard-${colorName}`}
-          className={`yard-base ${yardClass} yard-has-video ${isSpeaking ? "yard-speaking" : ""}`}
-        >
-          {/* Top Video Frame */}
-          <div className="yard-video-frame">
-            <VideoTrackView key={`board-video-${player.userId}`} track={media!.videoTrack} isSelf={isPlayerMe} />
-            <div className="yard-video-overlay-badge">
-              <span className="yard-video-player-name">{player.name}</span>
-              <div style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
-                {isSpeaking && <span className="yard-speaking-indicator">Speaking</span>}
-                <Video size={11} color="#34d399" />
-              </div>
-            </div>
-          </div>
-
-          {/* Shrunk Base Tokens Row at the Bottom of Base */}
-          <div className="yard-bottom-dock">
-            {baseTokens.length > 0 ? (
-              baseTokens.map((tokenId) => {
-                const isMovable = isMyTurn && isPlayerMe && movableTokenIds.includes(tokenId);
-
-                return (
-                  <button
-                    key={tokenId}
-                    disabled={!isMovable}
-                    onClick={() => onMoveToken(tokenId)}
-                    className={`yard-shrunk-token-btn ${isMovable ? "movable-token" : ""}`}
-                    style={{
-                      backgroundColor: theme.bg,
-                      borderColor: isMovable ? "#fef08a" : theme.border,
-                      boxShadow: isMovable
-                        ? `0 0 16px ${theme.glow}, inset 0 2px 4px rgba(255,255,255,0.4)`
-                        : `0 2px 6px rgba(0,0,0,0.6)`,
-                    }}
-                    title={
-                      isMovable
-                        ? `Click to launch Token ${tokenId + 1} into play!`
-                        : `Token ${tokenId + 1} waiting in base`
-                    }
-                  >
-                    {tokenId + 1}
-                  </button>
-                );
-              })
-            ) : (
-              <span className="yard-all-deployed">All In Play</span>
-            )}
-          </div>
-        </div>
-      );
-    }
-
-    // Default Classic Yard when video is OFF or player not present
-    return (
-      <div key={`yard-${colorName}`} className={`yard-base ${yardClass} ${!player ? "yard-empty" : ""}`}>
-        <div className="yard-label" style={{ color: labelColor }}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: theme.bg }} />
-          {player ? `${player.name.toUpperCase()} (${colorName})` : `${colorName} (EMPTY)`}
-        </div>
-        <div className="yard-inner-docks">
-          <div className="dock-slot" />
-          <div className="dock-slot" />
-          <div className="dock-slot" />
-          <div className="dock-slot" />
-        </div>
-      </div>
-    );
-  };
+  }, []);
 
   // Helper to render extra dock card for Purple or Orange player in 5/6 player games
-  const renderExtraYard = (player: GamePlayer) => {
+  const renderExtraYard = useCallback((player: GamePlayer) => {
     const isPlayerMe = player.userId === myUserId;
     const theme = PLAYER_COLORS[player.color] ?? PLAYER_COLORS.PURPLE;
     const isPurple = player.color === "PURPLE";
@@ -425,16 +458,36 @@ export const LudoBoard: React.FC<LudoBoardProps> = ({
         </div>
       </div>
     );
-  };
+  }, [myUserId, isMyTurn, movableTokenIds, onMoveToken, displayedSteps]);
 
-  // Generate track grid
-  const trackCells: React.ReactNode[] = [];
-  for (let r = 0; r < 15; r++) {
-    for (let c = 0; c < 15; c++) {
-      const cellNode = renderTrackCell(r, c);
-      if (cellNode) trackCells.push(cellNode);
+  // Generate track grid (static, only needs to compute once)
+  const trackCells = useMemo(() => {
+    const cells: React.ReactNode[] = [];
+    for (let r = 0; r < 15; r++) {
+      for (let c = 0; c < 15; c++) {
+        const cellNode = renderTrackCell(r, c);
+        if (cellNode) cells.push(cellNode);
+      }
     }
-  }
+    return cells;
+  }, [renderTrackCell]);
+
+  // Pre-group tokens by cell for layout calculations
+  const { tokensByCell, cellHasMovable } = useMemo(() => {
+    const byCell: Record<string, typeof tokensOnBoard> = {};
+    const hasMovable: Record<string, boolean> = {};
+
+    tokensOnBoard.forEach((t) => {
+      const cellKey = `${t.row}-${t.col}`;
+      if (!byCell[cellKey]) byCell[cellKey] = [];
+      byCell[cellKey].push(t);
+      if (t.isMovable) {
+        hasMovable[cellKey] = true;
+      }
+    });
+
+    return { tokensByCell: byCell, cellHasMovable: hasMovable };
+  }, [tokensOnBoard]);
 
   return (
     <div className="ludo-board-wrapper">
@@ -443,16 +496,56 @@ export const LudoBoard: React.FC<LudoBoardProps> = ({
         {trackCells}
 
         {/* 1. RED YARD (Top Left) */}
-        {renderCornerYard(redPlayer, "RED", "yard-red", "#fca5a5")}
+        <CornerYard
+          player={redPlayer}
+          colorName="RED"
+          yardClass="yard-red"
+          labelColor="#fca5a5"
+          myUserId={myUserId}
+          isMyTurn={isMyTurn}
+          movableTokenIds={movableTokenIds}
+          onMoveToken={onMoveToken}
+          displayedSteps={displayedSteps}
+        />
 
         {/* 2. GREEN YARD (Top Right) */}
-        {renderCornerYard(greenPlayer, "GREEN", "yard-green", "#6ee7b7")}
+        <CornerYard
+          player={greenPlayer}
+          colorName="GREEN"
+          yardClass="yard-green"
+          labelColor="#6ee7b7"
+          myUserId={myUserId}
+          isMyTurn={isMyTurn}
+          movableTokenIds={movableTokenIds}
+          onMoveToken={onMoveToken}
+          displayedSteps={displayedSteps}
+        />
 
         {/* 3. YELLOW YARD (Bottom Right) */}
-        {renderCornerYard(yellowPlayer, "YELLOW", "yard-yellow", "#fde68a")}
+        <CornerYard
+          player={yellowPlayer}
+          colorName="YELLOW"
+          yardClass="yard-yellow"
+          labelColor="#fde68a"
+          myUserId={myUserId}
+          isMyTurn={isMyTurn}
+          movableTokenIds={movableTokenIds}
+          onMoveToken={onMoveToken}
+          displayedSteps={displayedSteps}
+        />
 
         {/* 4. BLUE YARD (Bottom Left) */}
-        {renderCornerYard(bluePlayer, "BLUE", "yard-blue", "#93c5fd")}
+        <CornerYard
+          player={bluePlayer}
+          colorName="BLUE"
+          yardClass="yard-blue"
+          labelColor="#93c5fd"
+          myUserId={myUserId}
+          isMyTurn={isMyTurn}
+          movableTokenIds={movableTokenIds}
+          onMoveToken={onMoveToken}
+          displayedSteps={displayedSteps}
+        />
 
         {/* 5. CENTER VICTORY HOME (Rows 7-9, Cols 7-9) */}
         <div className="center-home-area">
@@ -466,126 +559,111 @@ export const LudoBoard: React.FC<LudoBoardProps> = ({
         </div>
 
         {/* 6. TOKENS ON BOARD */}
-        {(() => {
-          // Pre-group tokens by cell to calculate optimal layout and stacking
-          const tokensByCell: Record<string, typeof tokensOnBoard> = {};
-          const cellHasMovable: Record<string, boolean> = {};
+        {tokensOnBoard.map((item) => {
+          const theme = PLAYER_COLORS[item.player.color] ?? PLAYER_COLORS.RED;
+          const cellKey = `${item.row}-${item.col}`;
+          const cellTokens = tokensByCell[cellKey] || [item];
+          const totalInCell = cellTokens.length;
+          const tokenIndex = cellTokens.indexOf(item);
+          const isAnyMovableInCell = Boolean(cellHasMovable[cellKey]);
 
-          tokensOnBoard.forEach((t) => {
-            const cellKey = `${t.row}-${t.col}`;
-            if (!tokensByCell[cellKey]) tokensByCell[cellKey] = [];
-            tokensByCell[cellKey].push(t);
-            if (t.isMovable) {
-              cellHasMovable[cellKey] = true;
+          // Layout offsets for multiple tokens in the same cell
+          let offsetX = 0;
+          let offsetY = 0;
+          let scale = 1;
+
+          if (totalInCell === 2) {
+            scale = 0.85;
+            if (tokenIndex === 0) {
+              offsetX = -7;
+              offsetY = -5;
+            } else {
+              offsetX = 7;
+              offsetY = 5;
             }
-          });
-
-          return tokensOnBoard.map((item) => {
-            const theme = PLAYER_COLORS[item.player.color] ?? PLAYER_COLORS.RED;
-            const cellKey = `${item.row}-${item.col}`;
-            const cellTokens = tokensByCell[cellKey] || [item];
-            const totalInCell = cellTokens.length;
-            const tokenIndex = cellTokens.indexOf(item);
-            const isAnyMovableInCell = Boolean(cellHasMovable[cellKey]);
-
-            // Layout offsets for multiple tokens in the same cell
-            let offsetX = 0;
-            let offsetY = 0;
-            let scale = 1;
-
-            if (totalInCell === 2) {
-              scale = 0.85;
-              if (tokenIndex === 0) {
-                offsetX = -7;
-                offsetY = -5;
-              } else {
-                offsetX = 7;
-                offsetY = 5;
-              }
-            } else if (totalInCell === 3) {
-              scale = 0.78;
-              if (tokenIndex === 0) {
-                offsetX = -7;
-                offsetY = -6;
-              } else if (tokenIndex === 1) {
-                offsetX = 7;
-                offsetY = -6;
-              } else {
-                offsetX = 0;
-                offsetY = 6;
-              }
-            } else if (totalInCell >= 4) {
-              scale = 0.74;
-              const positions = [
-                [-7, -7],
-                [7, -7],
-                [-7, 7],
-                [7, 7],
-              ];
-              const pos = positions[tokenIndex % 4] || [0, 0];
-              offsetX = pos[0];
-              offsetY = pos[1];
-            }
-
-            // If this token is movable, pop it to center with high elevation!
-            if (item.isMovable) {
-              offsetY = -7;
+          } else if (totalInCell === 3) {
+            scale = 0.78;
+            if (tokenIndex === 0) {
+              offsetX = -7;
+              offsetY = -6;
+            } else if (tokenIndex === 1) {
+              offsetX = 7;
+              offsetY = -6;
+            } else {
               offsetX = 0;
+              offsetY = 6;
             }
+          } else if (totalInCell >= 4) {
+            scale = 0.74;
+            const positions = [
+              [-7, -7],
+              [7, -7],
+              [-7, 7],
+              [7, 7],
+            ];
+            const pos = positions[tokenIndex % 4] || [0, 0];
+            offsetX = pos[0];
+            offsetY = pos[1];
+          }
 
-            // Elevation: movable token sits on top (z-index: 150), hopping token (120), static tokens (20-30)
-            const zIndex = item.isMovable
-              ? 150
-              : item.isHopping
-              ? 120
-              : 20 + tokenIndex;
+          // If this token is movable, pop it to center with high elevation!
+          if (item.isMovable) {
+            offsetY = -7;
+            offsetX = 0;
+          }
 
-            // If a cell has a movable token for the player whose turn it is,
-            // set pointer-events: none on other unmovable tokens in this cell
-            // so any click/tap in the cell registers directly on the movable token!
-            const pointerEvents = isAnyMovableInCell && !item.isMovable ? "none" : "auto";
+          // Elevation: movable token sits on top (z-index: 150), hopping token (120), static tokens (20-30)
+          const zIndex = item.isMovable
+            ? 150
+            : item.isHopping
+            ? 120
+            : 20 + tokenIndex;
 
-            return (
-              <div
-                key={`${item.player.userId}-${item.tokenId}-${item.effectiveStep}`}
-                className={`ludo-token-wrapper ${item.isMovable ? "token-elevated" : ""}`}
+          // If a cell has a movable token for the player whose turn it is,
+          // set pointer-events: none on other unmovable tokens in this cell
+          // so any click/tap in the cell registers directly on the movable token!
+          const pointerEvents = isAnyMovableInCell && !item.isMovable ? "none" : "auto";
+
+          return (
+            <div
+              key={`${item.player.userId}-${item.tokenId}-${item.effectiveStep}`}
+              className={`ludo-token-wrapper ${item.isMovable ? "token-elevated" : ""}`}
+              style={{
+                gridColumnStart: item.col + 1,
+                gridRowStart: item.row + 1,
+                transform: `translate(${offsetX}px, ${offsetY}px)`,
+                zIndex,
+                pointerEvents,
+              }}
+            >
+              <button
+                disabled={!item.isMovable}
+                onClick={() => onMoveToken(item.tokenId)}
                 style={{
-                  gridColumnStart: item.col + 1,
-                  gridRowStart: item.row + 1,
-                  transform: `translate(${offsetX}px, ${offsetY}px)`,
-                  zIndex,
-                  pointerEvents,
+                  backgroundColor: theme.bg,
+                  color: "#ffffff",
+                  transform: item.isMovable ? undefined : `scale(${scale})`,
+                  boxShadow: item.isMovable
+                    ? `0 0 18px ${theme.glow}, inset 0 2px 4px rgba(255,255,255,0.4)`
+                    : item.isHopping
+                    ? `0 0 20px ${theme.glow}`
+                    : `0 3px 8px rgba(0,0,0,0.6), inset 0 1px 2px rgba(255,255,255,0.25)`,
+                  borderColor: item.isMovable ? "#fef08a" : theme.border,
                 }}
+                className={`ludo-token-btn ${item.isMovable ? "movable-token" : ""} ${
+                  item.isHopping ? "token-hopping" : ""
+                }`}
+                title={
+                  item.isMovable
+                    ? `Click to move Token ${item.tokenId + 1} (${item.player.name})`
+                    : `Token ${item.tokenId + 1} (${item.player.name})`
+                }
               >
-                <button
-                  disabled={!item.isMovable}
-                  onClick={() => onMoveToken(item.tokenId)}
-                  style={{
-                    backgroundColor: theme.bg,
-                    color: "#ffffff",
-                    transform: item.isMovable ? undefined : `scale(${scale})`,
-                    boxShadow: item.isMovable
-                      ? `0 0 18px ${theme.glow}, inset 0 2px 4px rgba(255,255,255,0.4)`
-                      : item.isHopping
-                      ? `0 0 20px ${theme.glow}`
-                      : `0 3px 8px rgba(0,0,0,0.6), inset 0 1px 2px rgba(255,255,255,0.25)`,
-                    borderColor: item.isMovable ? "#fef08a" : theme.border,
-                  }}
-                  className={`ludo-token-btn ${item.isMovable ? "movable-token" : ""} ${
-                    item.isHopping ? "token-hopping" : ""
-                  }`}
-                  title={
-                    item.isMovable
-                      ? `Click to move Token ${item.tokenId + 1} (${item.player.name})`
-                      : `Token ${item.tokenId + 1} (${item.player.name})`
-                  }
-                >
-                  {item.tokenId + 1}
-                </button>
-              </div>
-            );
-          });
-        })()}
+                {item.tokenId + 1}
+              </button>
+            </div>
+          );
+        })}
       </div>
 
       {/* Extra Base Yards for 5 and 6 Player Games */}
@@ -597,4 +675,6 @@ export const LudoBoard: React.FC<LudoBoardProps> = ({
       )}
     </div>
   );
-};
+});
+
+LudoBoard.displayName = "LudoBoard";

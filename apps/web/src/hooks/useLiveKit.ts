@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from "react";
 import {
   Room,
   RoomEvent,
@@ -18,44 +18,40 @@ export interface ParticipantMediaInfo {
   videoTrack: Track | null;
 }
 
-export interface UseLiveKitReturn {
-  isConnected: boolean;
-  isConnecting: boolean;
-  error: string | null;
-  isMicEnabled: boolean;
-  isCameraEnabled: boolean;
-  toggleMicrophone: () => Promise<void>;
-  toggleCamera: () => Promise<void>;
-  speakingUserIds: Set<string>;
-  getParticipantMedia: (userId: string) => ParticipantMediaInfo;
-  participantMediaMap: Record<string, ParticipantMediaInfo>;
-}
+// ---- Media Store (lives outside React render cycle) ----
+// This store holds all participant media state in a mutable ref-like object.
+// React components subscribe to it via useSyncExternalStore, which only triggers
+// a re-render when the snapshot reference actually changes for that component.
 
-export function useLiveKit(
-  roomId: string | null,
-  authToken: string | null,
-  enabled: boolean = true
-): UseLiveKitReturn {
-  const [isConnected, setIsConnected] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+type MediaListener = () => void;
 
-  const [isMicEnabled, setIsMicEnabled] = useState(false);
-  const [isCameraEnabled, setIsCameraEnabled] = useState(false);
+class MediaStore {
+  private listeners = new Set<MediaListener>();
+  private map: Record<string, ParticipantMediaInfo> = {};
+  private speakingSet = new Set<string>();
+  private snapshotVersion = 0;
+  // Frozen snapshot for useSyncExternalStore — only recreated when data changes
+  private snapshot: Record<string, ParticipantMediaInfo> = {};
 
-  const [speakingUserIds, setSpeakingUserIds] = useState<Set<string>>(new Set());
-  const [participantMediaMap, setParticipantMediaMap] = useState<
-    Record<string, ParticipantMediaInfo>
-  >({});
+  subscribe = (listener: MediaListener): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
 
-  const roomRef = useRef<Room | null>(null);
-  const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
-  const activeRoomIdRef = useRef<string | null>(null);
-  const isConnectingRef = useRef<boolean>(false);
+  getSnapshot = (): Record<string, ParticipantMediaInfo> => {
+    return this.snapshot;
+  };
 
-  // Helper to re-index all participants (local and remote) into media map
-  const syncParticipants = useCallback((room: Room) => {
-    const map: Record<string, ParticipantMediaInfo> = {};
+  private notify() {
+    this.snapshotVersion++;
+    // Create a new frozen snapshot reference so useSyncExternalStore detects the change
+    this.snapshot = { ...this.map };
+    this.listeners.forEach((l) => l());
+  }
+
+  /** Full re-index of all participants from the Room object */
+  syncFromRoom(room: Room) {
+    const newMap: Record<string, ParticipantMediaInfo> = {};
 
     // Local participant
     const local = room.localParticipant;
@@ -77,9 +73,9 @@ export function useLiveKit(
         }
       });
 
-      map[local.identity] = {
+      newMap[local.identity] = {
         identity: local.identity,
-        isSpeaking: local.isSpeaking,
+        isSpeaking: this.speakingSet.has(local.identity),
         isMicOn: localMicOn,
         isCameraOn: localCameraOn,
         videoTrack: localVideoTrack,
@@ -105,16 +101,132 @@ export function useLiveKit(
         }
       });
 
-      map[p.identity] = {
+      newMap[p.identity] = {
         identity: p.identity,
-        isSpeaking: p.isSpeaking,
+        isSpeaking: this.speakingSet.has(p.identity),
         isMicOn: remoteMicOn,
         isCameraOn: remoteCameraOn,
         videoTrack: remoteVideoTrack,
       };
     });
 
-    setParticipantMediaMap(map);
+    // Check if anything actually changed to avoid unnecessary notifications
+    if (this.hasMediaChanged(newMap)) {
+      this.map = newMap;
+      this.notify();
+    }
+  }
+
+  /** Update only speaking state — very lightweight, no track re-sync */
+  updateSpeakers(speakers: Participant[]) {
+    const newSpeaking = new Set(speakers.map((s) => s.identity));
+
+    // Check if speaking set actually changed
+    if (this.setsEqual(this.speakingSet, newSpeaking)) return;
+
+    this.speakingSet = newSpeaking;
+
+    // Update isSpeaking in the map entries WITHOUT changing track references
+    let changed = false;
+    for (const [id, info] of Object.entries(this.map)) {
+      const shouldBeSpeaking = newSpeaking.has(id);
+      if (info.isSpeaking !== shouldBeSpeaking) {
+        // Mutate in place to preserve track reference stability
+        this.map[id] = { ...info, isSpeaking: shouldBeSpeaking };
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      this.notify();
+    }
+  }
+
+  clear() {
+    this.map = {};
+    this.speakingSet.clear();
+    this.notify();
+  }
+
+  getParticipant(userId: string): ParticipantMediaInfo {
+    const info = this.map[userId];
+    if (info) return info;
+    return {
+      identity: userId,
+      isSpeaking: false,
+      isMicOn: false,
+      isCameraOn: false,
+      videoTrack: null,
+    };
+  }
+
+  private setsEqual(a: Set<string>, b: Set<string>): boolean {
+    if (a.size !== b.size) return false;
+    for (const item of a) {
+      if (!b.has(item)) return false;
+    }
+    return true;
+  }
+
+  /** Check if media-relevant properties changed (tracks, mic, camera) */
+  private hasMediaChanged(newMap: Record<string, ParticipantMediaInfo>): boolean {
+    const oldKeys = Object.keys(this.map);
+    const newKeys = Object.keys(newMap);
+    if (oldKeys.length !== newKeys.length) return true;
+
+    for (const key of newKeys) {
+      const oldInfo = this.map[key];
+      const newInfo = newMap[key];
+      if (!oldInfo) return true;
+      if (
+        oldInfo.videoTrack !== newInfo.videoTrack ||
+        oldInfo.isMicOn !== newInfo.isMicOn ||
+        oldInfo.isCameraOn !== newInfo.isCameraOn
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
+export interface UseLiveKitReturn {
+  isConnected: boolean;
+  isConnecting: boolean;
+  error: string | null;
+  isMicEnabled: boolean;
+  isCameraEnabled: boolean;
+  toggleMicrophone: () => Promise<void>;
+  toggleCamera: () => Promise<void>;
+  /** Stable function reference — safe to pass as prop without causing re-renders */
+  getParticipantMedia: (userId: string) => ParticipantMediaInfo;
+  /** Subscribe to media store for reactive updates (used by useParticipantMedia hook) */
+  mediaStore: MediaStore;
+}
+
+// Singleton media store — lives for the lifetime of the app
+const globalMediaStore = new MediaStore();
+
+export function useLiveKit(
+  roomId: string | null,
+  authToken: string | null,
+  enabled: boolean = true
+): UseLiveKitReturn {
+  const [isConnected, setIsConnected] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [isMicEnabled, setIsMicEnabled] = useState(false);
+  const [isCameraEnabled, setIsCameraEnabled] = useState(false);
+
+  const roomRef = useRef<Room | null>(null);
+  const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const activeRoomIdRef = useRef<string | null>(null);
+  const isConnectingRef = useRef<boolean>(false);
+
+  // Stable function reference that reads from the store — NEVER changes identity
+  const getParticipantMedia = useCallback((userId: string): ParticipantMediaInfo => {
+    return globalMediaStore.getParticipant(userId);
   }, []);
 
   // Cleanup on unmount
@@ -147,8 +259,7 @@ export function useLiveKit(
       setIsConnecting(false);
       setIsMicEnabled(false);
       setIsCameraEnabled(false);
-      setParticipantMediaMap({});
-      setSpeakingUserIds(new Set());
+      globalMediaStore.clear();
       return;
     }
 
@@ -234,7 +345,7 @@ export function useLiveKit(
             if (isCancelled) return;
             setIsConnected(true);
             setIsConnecting(false);
-            syncParticipants(room);
+            globalMediaStore.syncFromRoom(room);
           })
           .on(RoomEvent.Disconnected, () => {
             if (isCancelled) return;
@@ -242,8 +353,7 @@ export function useLiveKit(
             setIsConnecting(false);
             setIsMicEnabled(false);
             setIsCameraEnabled(false);
-            setParticipantMediaMap({});
-            setSpeakingUserIds(new Set());
+            globalMediaStore.clear();
           })
           .on(RoomEvent.Reconnecting, () => {
             setIsConnecting(true);
@@ -251,12 +361,12 @@ export function useLiveKit(
           .on(RoomEvent.Reconnected, () => {
             setIsConnecting(false);
             setIsConnected(true);
-            syncParticipants(room);
+            globalMediaStore.syncFromRoom(room);
           })
           .on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
             if (isCancelled) return;
-            const speaking = new Set(speakers.map((s) => s.identity));
-            setSpeakingUserIds(speaking);
+            // Only update speaking flags — does NOT trigger React re-render in App
+            globalMediaStore.updateSpeakers(speakers);
           })
           .on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication, participant) => {
             if (track.kind === Track.Kind.Audio) {
@@ -265,7 +375,7 @@ export function useLiveKit(
               audioElementsRef.current.set(participant.identity, audioEl);
               document.body.appendChild(audioEl);
             }
-            syncParticipants(room);
+            globalMediaStore.syncFromRoom(room);
           })
           .on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack, publication, participant) => {
             if (track.kind === Track.Kind.Audio) {
@@ -276,16 +386,16 @@ export function useLiveKit(
               }
               audioElementsRef.current.delete(participant.identity);
             }
-            syncParticipants(room);
+            globalMediaStore.syncFromRoom(room);
           })
           .on(RoomEvent.TrackMuted, () => {
-            syncParticipants(room);
+            globalMediaStore.syncFromRoom(room);
           })
           .on(RoomEvent.TrackUnmuted, () => {
-            syncParticipants(room);
+            globalMediaStore.syncFromRoom(room);
           })
           .on(RoomEvent.ParticipantConnected, () => {
-            syncParticipants(room);
+            globalMediaStore.syncFromRoom(room);
           })
           .on(RoomEvent.ParticipantDisconnected, (participant) => {
             const existing = audioElementsRef.current.get(participant.identity);
@@ -293,13 +403,13 @@ export function useLiveKit(
               existing.parentNode.removeChild(existing);
             }
             audioElementsRef.current.delete(participant.identity);
-            syncParticipants(room);
+            globalMediaStore.syncFromRoom(room);
           })
           .on(RoomEvent.LocalTrackPublished, () => {
-            syncParticipants(room);
+            globalMediaStore.syncFromRoom(room);
           })
           .on(RoomEvent.LocalTrackUnpublished, () => {
-            syncParticipants(room);
+            globalMediaStore.syncFromRoom(room);
           });
 
         await room.connect(wsUrl, sfuToken, {
@@ -320,7 +430,7 @@ export function useLiveKit(
 
         setIsConnected(true);
         setIsConnecting(false);
-        syncParticipants(room);
+        globalMediaStore.syncFromRoom(room);
       } catch (err: unknown) {
         if (isCancelled) return;
         console.error("LiveKit connection error:", err);
@@ -338,7 +448,7 @@ export function useLiveKit(
     return () => {
       isCancelled = true;
     };
-  }, [roomId, authToken, enabled, syncParticipants]);
+  }, [roomId, authToken, enabled]);
 
   // Toggle Microphone
   const toggleMicrophone = useCallback(async () => {
@@ -352,13 +462,13 @@ export function useLiveKit(
       const nextState = !isMicEnabled;
       await room.localParticipant.setMicrophoneEnabled(nextState);
       setIsMicEnabled(nextState);
-      syncParticipants(room);
+      globalMediaStore.syncFromRoom(room);
     } catch (err: unknown) {
       console.error("Microphone toggle error:", err);
       const msg = err instanceof Error ? err.message : "Could not toggle microphone";
       setError(msg);
     }
-  }, [isMicEnabled, syncParticipants]);
+  }, [isMicEnabled]);
 
   // Toggle Camera
   const toggleCamera = useCallback(async () => {
@@ -372,34 +482,13 @@ export function useLiveKit(
       const nextState = !isCameraEnabled;
       await room.localParticipant.setCameraEnabled(nextState);
       setIsCameraEnabled(nextState);
-      syncParticipants(room);
+      globalMediaStore.syncFromRoom(room);
     } catch (err: unknown) {
       console.error("Camera toggle error:", err);
       const msg = err instanceof Error ? err.message : "Could not toggle camera";
       setError(msg);
     }
-  }, [isCameraEnabled, syncParticipants]);
-
-  const getParticipantMedia = useCallback(
-    (userId: string): ParticipantMediaInfo => {
-      const info = participantMediaMap[userId];
-      const isSpeaking = speakingUserIds.has(userId);
-      if (info) {
-        return {
-          ...info,
-          isSpeaking,
-        };
-      }
-      return {
-        identity: userId,
-        isSpeaking,
-        isMicOn: false,
-        isCameraOn: false,
-        videoTrack: null,
-      };
-    },
-    [participantMediaMap, speakingUserIds]
-  );
+  }, [isCameraEnabled]);
 
   return {
     isConnected,
@@ -409,8 +498,55 @@ export function useLiveKit(
     isCameraEnabled,
     toggleMicrophone,
     toggleCamera,
-    speakingUserIds,
     getParticipantMedia,
-    participantMediaMap,
+    mediaStore: globalMediaStore,
   };
+}
+
+// ---- Hook for components that need to reactively display participant media ----
+// This hook subscribes to the MediaStore and only re-renders the component
+// when the specific participant's media info actually changes.
+
+export function useParticipantMedia(userId: string): ParticipantMediaInfo {
+  const snapshotRef = useRef<ParticipantMediaInfo>({
+    identity: userId,
+    isSpeaking: false,
+    isMicOn: false,
+    isCameraOn: false,
+    videoTrack: null,
+  });
+
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => {
+      return globalMediaStore.subscribe(() => {
+        const next = globalMediaStore.getParticipant(userId);
+        const prev = snapshotRef.current;
+        // Only notify React if something actually changed for THIS participant
+        if (
+          prev.videoTrack !== next.videoTrack ||
+          prev.isCameraOn !== next.isCameraOn ||
+          prev.isMicOn !== next.isMicOn ||
+          prev.isSpeaking !== next.isSpeaking
+        ) {
+          snapshotRef.current = next;
+          onStoreChange();
+        }
+      });
+    },
+    [userId]
+  );
+
+  const getSnapshot = useCallback(() => {
+    return snapshotRef.current;
+  }, []);
+
+  // Initialize on first call
+  const initial = globalMediaStore.getParticipant(userId);
+  if (snapshotRef.current.videoTrack !== initial.videoTrack ||
+      snapshotRef.current.isCameraOn !== initial.isCameraOn ||
+      snapshotRef.current.isMicOn !== initial.isMicOn) {
+    snapshotRef.current = initial;
+  }
+
+  return useSyncExternalStore(subscribe, getSnapshot);
 }

@@ -2,14 +2,13 @@ import React from "react";
 import type { GamePlayer } from "commons-ts/game";
 import { Crown, Wifi, WifiOff, Mic, MicOff, Video } from "lucide-react";
 import { VideoTrackView } from "./VideoTrackView";
-import type { ParticipantMediaInfo } from "../hooks/useLiveKit";
+import { useParticipantMedia } from "../hooks/useLiveKit";
 
 interface PlayerCardProps {
   player: GamePlayer;
   isCurrentTurn: boolean;
   isHost: boolean;
   isSelf: boolean;
-  mediaInfo?: ParticipantMediaInfo;
 }
 
 const COLOR_CONFIG: Record<string, { bg: string; border: string; glow: string }> = {
@@ -30,13 +29,15 @@ const CORNER_NAMES: Record<string, string> = {
   ORANGE: "Orange Bay",
 };
 
-export const PlayerCard = React.memo<PlayerCardProps>(({
+export const PlayerCard: React.FC<PlayerCardProps> = ({
   player,
   isCurrentTurn,
   isHost,
   isSelf,
-  mediaInfo,
 }) => {
+  // Subscribe directly to the media store — only re-renders when THIS player's media changes
+  const mediaInfo = useParticipantMedia(player.userId);
+
   const theme = COLOR_CONFIG[player.color] ?? COLOR_CONFIG.RED;
   const homeCount = player.tokens.filter((t) => t.status === "HOME").length;
   const activeCount = player.tokens.filter((t) => t.status === "ACTIVE").length;
@@ -172,6 +173,6 @@ export const PlayerCard = React.memo<PlayerCardProps>(({
       </div>
     </div>
   );
-});
+};
 
 PlayerCard.displayName = "PlayerCard";

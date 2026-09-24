@@ -1,12 +1,15 @@
 import React from "react";
 import type { GamePlayer } from "commons-ts/game";
-import { Crown, Wifi, WifiOff } from "lucide-react";
+import { Crown, Wifi, WifiOff, Mic, MicOff, Video } from "lucide-react";
+import { VideoTrackView } from "./VideoTrackView";
+import type { ParticipantMediaInfo } from "../hooks/useLiveKit";
 
 interface PlayerCardProps {
   player: GamePlayer;
   isCurrentTurn: boolean;
   isHost: boolean;
   isSelf: boolean;
+  mediaInfo?: ParticipantMediaInfo;
 }
 
 const COLOR_CONFIG: Record<string, { bg: string; border: string; glow: string }> = {
@@ -32,11 +35,16 @@ export const PlayerCard: React.FC<PlayerCardProps> = ({
   isCurrentTurn,
   isHost,
   isSelf,
+  mediaInfo,
 }) => {
   const theme = COLOR_CONFIG[player.color] ?? COLOR_CONFIG.RED;
   const homeCount = player.tokens.filter((t) => t.status === "HOME").length;
   const activeCount = player.tokens.filter((t) => t.status === "ACTIVE").length;
   const baseCount = player.tokens.filter((t) => t.status === "BASE").length;
+
+  const isSpeaking = Boolean(mediaInfo?.isSpeaking);
+  const isMicOn = Boolean(mediaInfo?.isMicOn);
+  const isCameraOn = Boolean(mediaInfo?.isCameraOn && mediaInfo?.videoTrack);
 
   return (
     <div
@@ -63,9 +71,35 @@ export const PlayerCard: React.FC<PlayerCardProps> = ({
 
       <div className="player-card-header">
         <div className="player-info-group">
-          <div className="player-avatar" style={{ backgroundColor: theme.bg }}>
-            {player.name.slice(0, 2).toUpperCase()}
+          {/* Avatar / Video Feed Container */}
+          <div
+            className={`player-media-tile ${isSpeaking ? "speaking-active" : ""}`}
+            style={{
+              borderColor: isSpeaking ? "#10b981" : theme.border,
+            }}
+          >
+            {isCameraOn && mediaInfo?.videoTrack ? (
+              <div className="player-video-container">
+                <VideoTrackView track={mediaInfo.videoTrack} isSelf={isSelf} />
+                <span className="live-cam-badge">
+                  <Video size={10} color="#ffffff" />
+                </span>
+              </div>
+            ) : (
+              <div className="player-avatar" style={{ backgroundColor: theme.bg }}>
+                {player.name.slice(0, 2).toUpperCase()}
+              </div>
+            )}
+
+            {/* Speaking / Mic Status Pin */}
+            <div
+              className={`mic-status-pin ${isMicOn ? "mic-active" : "mic-muted"}`}
+              title={isMicOn ? (isSpeaking ? "Speaking" : "Microphone On") : "Microphone Muted"}
+            >
+              {isMicOn ? <Mic size={11} color="#ffffff" /> : <MicOff size={11} color="#cbd5e1" />}
+            </div>
           </div>
+
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
               <span className="player-name-text">{player.name}</span>

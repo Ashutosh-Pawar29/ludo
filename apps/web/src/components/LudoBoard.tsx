@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { BoardType, GamePlayer, TokenId } from "commons-ts/game";
 import { getStepCoordinate, getTokenCoordinate } from "../utils/boardCoordinates";
-import { Shield, Sparkles, Star } from "lucide-react";
+import { Shield, Sparkles, Star, Video } from "lucide-react";
+import { VideoTrackView } from "./VideoTrackView";
+import type { ParticipantMediaInfo } from "../hooks/useLiveKit";
 
 export interface LudoBoardProps {
   players: GamePlayer[];
@@ -10,6 +12,7 @@ export interface LudoBoardProps {
   onMoveToken: (tokenId: TokenId) => void;
   myUserId?: string;
   boardType?: BoardType;
+  getParticipantMedia?: (userId: string) => ParticipantMediaInfo;
 }
 
 const PLAYER_COLORS: Record<string, { bg: string; border: string; glow: string }> = {
@@ -23,15 +26,15 @@ const PLAYER_COLORS: Record<string, { bg: string; border: string; glow: string }
 
 // Safe squares: starting spots + star tiles
 const SAFE_CELLS = new Set([
-  "6-1",   // Red Start
-  "1-8",   // Green Start
-  "8-13",  // Yellow Start
-  "13-6",  // Blue Start
-  "8-1",   // Purple Start
-  "2-6",   // Star safe / Orange Start
-  "6-12",  // Star safe
-  "12-8",  // Star safe
-  "8-2",   // Star safe
+  "6-1", // Red Start
+  "1-8", // Green Start
+  "8-13", // Yellow Start
+  "13-6", // Blue Start
+  "8-1", // Purple Start
+  "2-6", // Star safe / Orange Start
+  "6-12", // Star safe
+  "12-8", // Star safe
+  "8-2", // Star safe
 ]);
 
 function playHopSound() {
@@ -64,6 +67,7 @@ export const LudoBoard: React.FC<LudoBoardProps> = ({
   onMoveToken,
   myUserId,
   boardType = "4_PLAYER",
+  getParticipantMedia,
 }) => {
   // Animation state: tracks currently displayed step per token
   const [displayedSteps, setDisplayedSteps] = useState<Record<string, number>>({});
@@ -163,6 +167,9 @@ export const LudoBoard: React.FC<LudoBoardProps> = ({
 
   players.forEach((player) => {
     const isPlayerMe = player.userId === myUserId;
+    const media = getParticipantMedia ? getParticipantMedia(player.userId) : undefined;
+    const playerHasVideo = Boolean(media?.isCameraOn && media?.videoTrack);
+
     player.tokens.forEach((token) => {
       const key = `${player.userId}-${token.id}`;
       const effectiveStep = displayedSteps[key] ?? token.step;
@@ -172,7 +179,10 @@ export const LudoBoard: React.FC<LudoBoardProps> = ({
       const isExtraBaseToken =
         (player.color === "PURPLE" || player.color === "ORANGE") && effectiveStep === 0;
 
-      if (!isExtraBaseToken) {
+      // When player has video on, base tokens (step 0) render in the bottom row of their video base
+      const isBaseTokenInVideoYard = playerHasVideo && effectiveStep === 0;
+
+      if (!isExtraBaseToken && !isBaseTokenInVideoYard) {
         const coord =
           effectiveStep === 0
             ? getTokenCoordinate(player.color, token.id, "BASE", 0, -1, boardType)
@@ -263,6 +273,98 @@ export const LudoBoard: React.FC<LudoBoardProps> = ({
     );
   };
 
+  // Helper to render corner yard (with video stream & bottom token row if video ON, or classic square dock if OFF)
+  const renderCornerYard = (
+    player: GamePlayer | undefined,
+    colorName: string,
+    yardClass: string,
+    labelColor: string
+  ) => {
+    const isPlayerMe = player?.userId === myUserId;
+    const media = player && getParticipantMedia ? getParticipantMedia(player.userId) : undefined;
+    const hasVideo = Boolean(player && media?.isCameraOn && media?.videoTrack);
+    const isSpeaking = Boolean(media?.isSpeaking);
+    const theme = player ? (PLAYER_COLORS[player.color] ?? PLAYER_COLORS.RED) : PLAYER_COLORS.RED;
+
+    if (hasVideo && player) {
+      const baseTokens = ([0, 1, 2, 3] as TokenId[]).filter((tokenId) => {
+        const token = player.tokens.find((t) => t.id === tokenId);
+        const key = `${player.userId}-${tokenId}`;
+        const effectiveStep = displayedSteps[key] ?? token?.step ?? 0;
+        return effectiveStep === 0;
+      });
+
+      return (
+        <div
+          key={`yard-${colorName}`}
+          className={`yard-base ${yardClass} yard-has-video ${isSpeaking ? "yard-speaking" : ""}`}
+        >
+          {/* Top Video Frame */}
+          <div className="yard-video-frame">
+            <VideoTrackView track={media!.videoTrack} isSelf={isPlayerMe} />
+            <div className="yard-video-overlay-badge">
+              <span className="yard-video-player-name">{player.name}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                {isSpeaking && <span className="yard-speaking-indicator">Speaking</span>}
+                <Video size={11} color="#34d399" />
+              </div>
+            </div>
+          </div>
+
+          {/* Shrunk Base Tokens Row at the Bottom of Base */}
+          <div className="yard-bottom-dock">
+            {baseTokens.length > 0 ? (
+              baseTokens.map((tokenId) => {
+                const isMovable = isMyTurn && isPlayerMe && movableTokenIds.includes(tokenId);
+
+                return (
+                  <button
+                    key={tokenId}
+                    disabled={!isMovable}
+                    onClick={() => onMoveToken(tokenId)}
+                    className={`yard-shrunk-token-btn ${isMovable ? "movable-token" : ""}`}
+                    style={{
+                      backgroundColor: theme.bg,
+                      borderColor: isMovable ? "#fef08a" : theme.border,
+                      boxShadow: isMovable
+                        ? `0 0 16px ${theme.glow}, inset 0 2px 4px rgba(255,255,255,0.4)`
+                        : `0 2px 6px rgba(0,0,0,0.6)`,
+                    }}
+                    title={
+                      isMovable
+                        ? `Click to launch Token ${tokenId + 1} into play!`
+                        : `Token ${tokenId + 1} waiting in base`
+                    }
+                  >
+                    {tokenId + 1}
+                  </button>
+                );
+              })
+            ) : (
+              <span className="yard-all-deployed">All In Play</span>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // Default Classic Yard when video is OFF or player not present
+    return (
+      <div key={`yard-${colorName}`} className={`yard-base ${yardClass} ${!player ? "yard-empty" : ""}`}>
+        <div className="yard-label" style={{ color: labelColor }}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: theme.bg }} />
+          {player ? `${player.name.toUpperCase()} (${colorName})` : `${colorName} (EMPTY)`}
+        </div>
+        <div className="yard-inner-docks">
+          <div className="dock-slot" />
+          <div className="dock-slot" />
+          <div className="dock-slot" />
+          <div className="dock-slot" />
+        </div>
+      </div>
+    );
+  };
+
   // Helper to render extra dock card for Purple or Orange player in 5/6 player games
   const renderExtraYard = (player: GamePlayer) => {
     const isPlayerMe = player.userId === myUserId;
@@ -341,60 +443,16 @@ export const LudoBoard: React.FC<LudoBoardProps> = ({
         {trackCells}
 
         {/* 1. RED YARD (Top Left) */}
-        <div className={`yard-base yard-red ${!redPlayer ? "yard-empty" : ""}`}>
-          <div className="yard-label" style={{ color: "#fca5a5" }}>
-            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#ef4444" }} />
-            {redPlayer ? `${redPlayer.name.toUpperCase()} (RED)` : "RED (EMPTY)"}
-          </div>
-          <div className="yard-inner-docks">
-            <div className="dock-slot" />
-            <div className="dock-slot" />
-            <div className="dock-slot" />
-            <div className="dock-slot" />
-          </div>
-        </div>
+        {renderCornerYard(redPlayer, "RED", "yard-red", "#fca5a5")}
 
         {/* 2. GREEN YARD (Top Right) */}
-        <div className={`yard-base yard-green ${!greenPlayer ? "yard-empty" : ""}`}>
-          <div className="yard-label" style={{ color: "#6ee7b7" }}>
-            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#10b981" }} />
-            {greenPlayer ? `${greenPlayer.name.toUpperCase()} (GREEN)` : "GREEN (EMPTY)"}
-          </div>
-          <div className="yard-inner-docks">
-            <div className="dock-slot" />
-            <div className="dock-slot" />
-            <div className="dock-slot" />
-            <div className="dock-slot" />
-          </div>
-        </div>
+        {renderCornerYard(greenPlayer, "GREEN", "yard-green", "#6ee7b7")}
 
         {/* 3. YELLOW YARD (Bottom Right) */}
-        <div className={`yard-base yard-yellow ${!yellowPlayer ? "yard-empty" : ""}`}>
-          <div className="yard-label" style={{ color: "#fde68a" }}>
-            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#f59e0b" }} />
-            {yellowPlayer ? `${yellowPlayer.name.toUpperCase()} (YELLOW)` : "YELLOW (EMPTY)"}
-          </div>
-          <div className="yard-inner-docks">
-            <div className="dock-slot" />
-            <div className="dock-slot" />
-            <div className="dock-slot" />
-            <div className="dock-slot" />
-          </div>
-        </div>
+        {renderCornerYard(yellowPlayer, "YELLOW", "yard-yellow", "#fde68a")}
 
         {/* 4. BLUE YARD (Bottom Left) */}
-        <div className={`yard-base yard-blue ${!bluePlayer ? "yard-empty" : ""}`}>
-          <div className="yard-label" style={{ color: "#93c5fd" }}>
-            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#3b82f6" }} />
-            {bluePlayer ? `${bluePlayer.name.toUpperCase()} (BLUE)` : "BLUE (EMPTY)"}
-          </div>
-          <div className="yard-inner-docks">
-            <div className="dock-slot" />
-            <div className="dock-slot" />
-            <div className="dock-slot" />
-            <div className="dock-slot" />
-          </div>
-        </div>
+        {renderCornerYard(bluePlayer, "BLUE", "yard-blue", "#93c5fd")}
 
         {/* 5. CENTER VICTORY HOME (Rows 7-9, Cols 7-9) */}
         <div className="center-home-area">

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { LogIn, UserPlus, Sparkles, AlertCircle } from "lucide-react";
 import type { AuthState } from "../types";
+import { getApiUrl } from "../config";
 
 interface AuthModalProps {
   onSuccess: (auth: AuthState) => void;
@@ -24,7 +25,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
     const guestPass = "Pass@123";
 
     try {
-      const res = await fetch("/api/signup", {
+      const res = await fetch(getApiUrl("/api/signup"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -62,7 +63,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
         : { email, password };
 
     try {
-      const res = await fetch(endpoint, {
+      const res = await fetch(getApiUrl(endpoint), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),

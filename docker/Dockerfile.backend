@@ -1,0 +1,28 @@
+FROM oven/bun:1-alpine AS runner
+
+WORKDIR /app
+
+# Copy root workspace manifests
+COPY package.json bun.lock* ./
+
+# Copy workspace package manifests for optimized layer caching
+COPY packages/commons-ts/package.json ./packages/commons-ts/
+COPY packages/db/package.json ./packages/db/
+COPY apps/backend/package.json ./apps/backend/
+
+# Install monorepo dependencies
+RUN bun install --frozen-lockfile || bun install
+
+# Copy source code of dependencies and backend
+COPY packages/commons-ts/ ./packages/commons-ts/
+COPY packages/db/ ./packages/db/
+COPY apps/backend/ ./apps/backend/
+
+WORKDIR /app/apps/backend
+
+EXPOSE 3000
+
+ENV NODE_ENV=production
+ENV PORT=3000
+
+CMD ["bun", "run", "index.ts"]

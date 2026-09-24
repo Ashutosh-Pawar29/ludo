@@ -6,9 +6,11 @@ import { db } from "db";
 import { initGame } from "./gameEngine/gamemodules";
 import { getGameState, saveGameState } from "./gameEngine/redismodules";
 
+const PORT = Number(process.env.PORT) || 3001;
 const wss = new WebSocketServer({
-    port: 3001
-})
+    port: PORT
+});
+console.log(`WebSocket server listening on port ${PORT}`);
 const database = db.orm.public
 let socketconnections = new Map<string,Map<string,WebSocket>>()
 

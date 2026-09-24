@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Copy, Check, Users, Play, PlusCircle, ArrowRight } from "lucide-react";
 import type { User } from "../types";
+import { getApiUrl } from "../config";
 
 interface LobbyProps {
   user: User;
@@ -37,7 +38,7 @@ export const Lobby: React.FC<LobbyProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/create-room", {
+      const res = await fetch(getApiUrl("/api/create-room"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -79,7 +80,7 @@ export const Lobby: React.FC<LobbyProps> = ({
     }
 
     try {
-      const res = await fetch("/api/join-room", {
+      const res = await fetch(getApiUrl("/api/join-room"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

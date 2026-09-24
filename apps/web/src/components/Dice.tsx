@@ -81,7 +81,7 @@ export const Dice: React.FC<DiceProps> = ({
   const rolling = isRolling || animating;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.75rem" }}>
+    <div className="dice-container-box">
       <button
         onClick={handleClick}
         disabled={disabled || isRolling}
@@ -99,7 +99,7 @@ export const Dice: React.FC<DiceProps> = ({
         </div>
       </button>
 
-      <div style={{ fontSize: "0.75rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+      <div className="dice-status-text">
         {!disabled ? (
           <span style={{ color: "#34d399" }}>Your Turn to Roll!</span>
         ) : (
@@ -108,6 +108,19 @@ export const Dice: React.FC<DiceProps> = ({
       </div>
 
       <style>{`
+        .dice-container-box {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 0.5rem;
+        }
+        .dice-status-text {
+          font-size: 0.75rem;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          white-space: nowrap;
+        }
         .dice-cube {
           width: 76px;
           height: 76px;
@@ -165,6 +178,33 @@ export const Dice: React.FC<DiceProps> = ({
           grid-column: 1 / span 3;
           grid-row: 1 / span 3;
           font-size: 30px;
+        }
+
+        /* Mobile specific sizing - properly overrides desktop defaults */
+        @media (max-width: 768px) {
+          .dice-container-box {
+            gap: 0.25rem;
+          }
+          .dice-cube {
+            width: 58px;
+            height: 58px;
+            border-radius: 14px;
+            border-width: 2px;
+          }
+          .dice-face {
+            width: 40px;
+            height: 40px;
+          }
+          .dot {
+            width: 7.5px;
+            height: 7.5px;
+          }
+          .dice-placeholder {
+            font-size: 24px;
+          }
+          .dice-status-text {
+            font-size: 0.68rem;
+          }
         }
       `}</style>
     </div>

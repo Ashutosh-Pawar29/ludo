@@ -9,7 +9,10 @@ import { TurnTimer } from "./components/TurnTimer";
 import { PlayerCard } from "./components/PlayerCard";
 import { AdminKickModal } from "./components/AdminKickModal";
 import { GameOverModal } from "./components/GameOverModal";
-import { LogOut, Wifi, WifiOff } from "lucide-react";
+import { MediaControlBar } from "./components/MediaControlBar";
+import { useLiveKit } from "./hooks/useLiveKit";
+import { LogOut, Wifi, WifiOff, ChevronDown, ChevronUp, Copy, Check, Users } from "lucide-react";
+import { getApiUrl, getWsUrl } from "./config";
 
 export const App: React.FC = () => {
   // Auth state
@@ -42,6 +45,41 @@ export const App: React.FC = () => {
   // Notification / toast message
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // Mobile dropdown navbar state
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [mobilePlayersOpen, setMobilePlayersOpen] = useState(false);
+  const [copiedRoomId, setCopiedRoomId] = useState(false);
+  const headerRef = useRef<HTMLElement>(null);
+
+  // Close mobile dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent | TouchEvent) => {
+      if (headerRef.current && !headerRef.current.contains(event.target as Node)) {
+        setMobileMenuOpen(false);
+      }
+    };
+    if (mobileMenuOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+      document.addEventListener("touchstart", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("touchstart", handleClickOutside);
+    };
+  }, [mobileMenuOpen]);
+
+  // LiveKit SFU Voice & Video Chat
+  const {
+    isConnected: isLiveKitConnected,
+    isConnecting: isLiveKitConnecting,
+    error: liveKitError,
+    isMicEnabled,
+    isCameraEnabled,
+    toggleMicrophone,
+    toggleCamera,
+    getParticipantMedia,
+  } = useLiveKit(roomId, token, Boolean(token && roomId));
+
   const wsRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -57,7 +95,7 @@ export const App: React.FC = () => {
   // Fetch current user details if token exists
   useEffect(() => {
     if (token && (!user || !user.id)) {
-      fetch("/api/users/me", {
+      fetch(getApiUrl("/api/users/me"), {
         headers: { token },
       })
         .then((res) => res.json())
@@ -76,7 +114,7 @@ export const App: React.FC = () => {
     if (!roomId || (gameState && gameState.status !== "WAITING")) return;
 
     const syncRoom = () => {
-      fetch(`/api/rooms/${roomId}`)
+      fetch(getApiUrl(`/api/rooms/${roomId}`))
         .then((res) => res.json())
         .then((data) => {
           if (data?.players && Array.isArray(data.players)) {
@@ -104,10 +142,7 @@ export const App: React.FC = () => {
       return;
     }
 
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws?token=${encodeURIComponent(
-      token
-    )}&roomId=${encodeURIComponent(roomId)}`;
+    const wsUrl = getWsUrl(token, roomId);
 
     const socket = new WebSocket(wsUrl);
     wsRef.current = socket;
@@ -311,7 +346,7 @@ export const App: React.FC = () => {
   return (
     <div className="app-container">
       {/* Top Navigation Bar */}
-      <header className="app-header">
+      <header className="app-header" ref={headerRef}>
         <div className="app-brand">
           <div className="brand-logo-icon">
             <span style={{ fontSize: "1.1rem" }}>🎲</span>
@@ -319,10 +354,11 @@ export const App: React.FC = () => {
           <div className="brand-text">
             LUDO <span>ARENA</span>
           </div>
-          <span className="brand-badge">MULTIPLAYER</span>
+          <span className="brand-badge desktop-only">MULTIPLAYER</span>
         </div>
 
-        <div className="app-user-bar">
+        {/* Desktop User Bar */}
+        <div className="app-user-bar desktop-only">
           <div className="user-profile-badge">
             <div className="user-avatar-circle">
               {user.name.slice(0, 1).toUpperCase()}
@@ -350,6 +386,97 @@ export const App: React.FC = () => {
             <LogOut style={{ width: 16, height: 16 }} />
           </button>
         </div>
+
+        {/* Mobile Dropdown Trigger */}
+        <div className="mobile-only">
+          <button
+            className="mobile-header-trigger"
+            onClick={() => setMobileMenuOpen((prev) => !prev)}
+            aria-label="Toggle navigation menu"
+          >
+            <div className="user-avatar-circle mini">
+              {user.name.slice(0, 1).toUpperCase()}
+            </div>
+            <span className="mobile-header-username">{user.name}</span>
+            <span className={`mobile-status-dot ${wsConnected ? "online" : "offline"}`} />
+            {mobileMenuOpen ? (
+              <ChevronUp style={{ width: 15, height: 15, color: "#94a3b8" }} />
+            ) : (
+              <ChevronDown style={{ width: 15, height: 15, color: "#94a3b8" }} />
+            )}
+          </button>
+        </div>
+
+        {/* Mobile Dropdown Menu Drawer */}
+        {mobileMenuOpen && (
+          <div className="mobile-dropdown-menu">
+            <div className="mobile-dropdown-header">
+              <div className="mobile-dropdown-user">
+                <div className="user-avatar-circle large">
+                  {user.name.slice(0, 1).toUpperCase()}
+                </div>
+                <div className="mobile-user-info">
+                  <div className="mobile-user-name">
+                    {user.name}
+                    {isHost && <span className="host-tag">HOST</span>}
+                  </div>
+                  <div className="mobile-user-id">ID: {user.id}</div>
+                </div>
+              </div>
+              <div>
+                {wsConnected ? (
+                  <span className="connection-pill online">
+                    <Wifi style={{ width: 12, height: 12 }} /> Live
+                  </span>
+                ) : (
+                  <span className="connection-pill offline">
+                    <WifiOff style={{ width: 12, height: 12 }} /> Offline
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {roomId && (
+              <div className="mobile-dropdown-room">
+                <div className="mobile-room-label">Room Code:</div>
+                <div className="mobile-room-code-badge">
+                  <code>{roomId}</code>
+                  <button
+                    className="mobile-copy-btn"
+                    onClick={() => {
+                      navigator.clipboard.writeText(roomId);
+                      setCopiedRoomId(true);
+                      setTimeout(() => setCopiedRoomId(false), 2000);
+                    }}
+                  >
+                    {copiedRoomId ? (
+                      <>
+                        <Check size={12} color="#34d399" /> Copied
+                      </>
+                    ) : (
+                      <>
+                        <Copy size={12} /> Copy
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="mobile-dropdown-actions">
+              <button
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  handleLogout();
+                }}
+                className="mobile-logout-btn"
+              >
+                <LogOut style={{ width: 16, height: 16 }} />
+                <span>Sign Out / Switch Account</span>
+              </button>
+            </div>
+          </div>
+        )}
       </header>
 
       {/* Toast Alert */}
@@ -400,17 +527,67 @@ export const App: React.FC = () => {
         ) : (
           /* LIVE GAME ARENA */
           <div className="arena-grid">
-            {/* Left Column: Player Cards */}
+            {/* Player Cards: Collapsible summary toggle on mobile, full column on desktop */}
             <div className="arena-col-players">
-              {gameState.players.map((p) => (
-                <PlayerCard
-                  key={p.userId}
-                  player={p}
-                  isCurrentTurn={gameState.currentTurnUserId === p.userId}
-                  isHost={isHost}
-                  isSelf={p.userId === user.id}
-                />
-              ))}
+              {/* Mobile-only Collapsible Header Toggle */}
+              <div className="mobile-only mobile-players-toggle-bar">
+                <button
+                  type="button"
+                  className="mobile-players-toggle-btn"
+                  onClick={() => setMobilePlayersOpen((prev) => !prev)}
+                  aria-expanded={mobilePlayersOpen}
+                >
+                  <div className="mobile-players-toggle-left">
+                    <Users size={15} color="#818cf8" />
+                    <span className="mobile-players-toggle-title">
+                      Players ({gameState.players.length})
+                    </span>
+                    <div className="mobile-players-mini-avatars">
+                      {gameState.players.map((p) => {
+                        const pMedia = getParticipantMedia(p.userId);
+                        return (
+                          <span
+                            key={p.userId}
+                            className={`mobile-mini-avatar-dot dot-${p.color.toLowerCase()}`}
+                            title={`${p.name} (${p.color})`}
+                          >
+                            {p.name.slice(0, 1).toUpperCase()}
+                            {pMedia?.isSpeaking && <span className="mini-speaking-ring" />}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="mobile-players-toggle-right">
+                    <span className="mobile-toggle-hint">
+                      {mobilePlayersOpen ? "Hide" : "Show All"}
+                    </span>
+                    {mobilePlayersOpen ? (
+                      <ChevronUp size={15} color="#94a3b8" />
+                    ) : (
+                      <ChevronDown size={15} color="#94a3b8" />
+                    )}
+                  </div>
+                </button>
+              </div>
+
+              {/* Cards Container: Always shown on desktop, toggled on mobile */}
+              <div
+                className={`players-cards-container ${
+                  mobilePlayersOpen ? "mobile-expanded" : "mobile-collapsed"
+                }`}
+              >
+                {gameState.players.map((p) => (
+                  <PlayerCard
+                    key={p.userId}
+                    player={p}
+                    isCurrentTurn={gameState.currentTurnUserId === p.userId}
+                    isHost={isHost}
+                    isSelf={p.userId === user.id}
+                    mediaInfo={getParticipantMedia(p.userId)}
+                  />
+                ))}
+              </div>
             </div>
 
             {/* Center Column: 15x15 Ludo Board */}
@@ -428,81 +605,62 @@ export const App: React.FC = () => {
                 onMoveToken={handleMoveToken}
                 myUserId={user.id}
                 boardType={gameState.boardType}
+                getParticipantMedia={getParticipantMedia}
               />
             </div>
 
             {/* Right Column: Dice Roll & Actions */}
             <div className="arena-col-actions">
-              <div style={{ textAlign: "center", marginBottom: "1.25rem" }}>
-                <span
-                  style={{
-                    fontSize: "0.75rem",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.08em",
-                    fontWeight: 800,
-                    color: "#94a3b8",
-                  }}
-                >
-                  Current Turn
-                </span>
-                <h3
-                  className="font-heading"
-                  style={{
-                    fontSize: "1.25rem",
-                    fontWeight: 800,
-                    color: "#ffffff",
-                    marginTop: "0.25rem",
-                  }}
-                >
+              <div className="action-turn-info">
+                <span className="action-turn-label">Current Turn</span>
+                <h3 className="action-turn-title font-heading">
                   {isMyTurn ? "Your Turn!" : `${currentPlayer?.name || "Player"}'s Turn`}
                 </h3>
+                {isMyTurn && gameState.turnPhase === "MOVE_TOKEN" && (
+                  <div className="action-move-tip">
+                    ✨ Click a bouncing token to move!
+                  </div>
+                )}
               </div>
 
-              <Dice
-                value={gameState.currentDice}
-                isRolling={false}
-                disabled={!isMyTurn || gameState.turnPhase !== "ROLL_DICE"}
-                onRoll={handleRollDice}
-                playerColor={
-                  currentPlayer?.color === "RED"
-                    ? "#ef4444"
-                    : currentPlayer?.color === "GREEN"
-                    ? "#10b981"
-                    : currentPlayer?.color === "YELLOW"
-                    ? "#f59e0b"
-                    : currentPlayer?.color === "BLUE"
-                    ? "#3b82f6"
-                    : currentPlayer?.color === "PURPLE"
-                    ? "#8b5cf6"
-                    : "#f97316"
-                }
-              />
-
-              {isMyTurn && gameState.turnPhase === "MOVE_TOKEN" && (
-                <div
-                  style={{
-                    marginTop: "1.25rem",
-                    padding: "0.75rem 1rem",
-                    borderRadius: "12px",
-                    background: "rgba(99, 102, 241, 0.2)",
-                    border: "1.5px solid rgba(99, 102, 241, 0.4)",
-                    color: "#c7d2fe",
-                    fontSize: "0.8rem",
-                    fontWeight: 700,
-                    textAlign: "center",
-                  }}
-                >
-                  ✨ Click a bouncing token on the board to move!
-                </div>
-              )}
+              <div className="action-dice-wrapper">
+                <Dice
+                  value={gameState.currentDice}
+                  isRolling={false}
+                  disabled={!isMyTurn || gameState.turnPhase !== "ROLL_DICE"}
+                  onRoll={handleRollDice}
+                  playerColor={
+                    currentPlayer?.color === "RED"
+                      ? "#ef4444"
+                      : currentPlayer?.color === "GREEN"
+                      ? "#10b981"
+                      : currentPlayer?.color === "YELLOW"
+                      ? "#f59e0b"
+                      : currentPlayer?.color === "BLUE"
+                      ? "#3b82f6"
+                      : currentPlayer?.color === "PURPLE"
+                      ? "#8b5cf6"
+                      : "#f97316"
+                  }
+                />
+              </div>
             </div>
           </div>
         )}
       </main>
 
-      <footer className="app-footer">
-        Ludo Arena Multiplayer &copy; 2026. Real-time WebSockets & Game Engine.
-      </footer>
+      {/* Floating Bottom Media Bar (LiveKit SFU Voice & Video) */}
+      {roomId && user && (
+        <MediaControlBar
+          isConnected={isLiveKitConnected}
+          isConnecting={isLiveKitConnecting}
+          isMicEnabled={isMicEnabled}
+          isCameraEnabled={isCameraEnabled}
+          toggleMicrophone={toggleMicrophone}
+          toggleCamera={toggleCamera}
+          error={liveKitError}
+        />
+      )}
     </div>
   );
 };

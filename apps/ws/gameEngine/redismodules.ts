@@ -1,7 +1,9 @@
 import type { LudoGameState } from "commons-ts/game";
 import { createClient } from "redis";
 
-const client = createClient();
+const client = createClient({
+    url: process.env.REDIS_URL || "redis://localhost:6379"
+});
 
 await client.connect().then(()=>{console.log("connected to redis ")}).catch((err)=>{console.log(err),process.exit(1)});
 

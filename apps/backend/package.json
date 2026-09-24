@@ -17,6 +17,7 @@
     "db": "*:workspace",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
+    "livekit-server-sdk": "^2.19.1",
     "resend": "^6.28.0"
   },
   "devDependencies": {

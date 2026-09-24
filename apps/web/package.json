@@ -11,6 +11,7 @@
   "dependencies": {
     "canvas-confetti": "^1.9.4",
     "commons-ts": "*:workspace",
+    "livekit-client": "^2.22.3",
     "lucide-react": "^1.16.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

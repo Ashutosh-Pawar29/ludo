@@ -6,6 +6,7 @@ import type { createRoom, joinRoom, signinBody, signupBody } from "commons-ts/ty
 import jwt  from "jsonwebtoken";
 import bcrypt from "bcrypt";
 import { authenticate, refreshtokenAuthenticate } from "./middlewares";
+import { AccessToken } from "livekit-server-sdk";
 
 const database = db.orm.public
 const jwt_pass:string = process.env.JWT_SECRET as string
@@ -13,7 +14,11 @@ const jwt_pass_refreshtoken:string = process.env.REFRESHTOKEN_JWT_SECRET as stri
 let refreshtokens = new Map<string,string>()
 const app = express();
 
-app.use(cors());
+app.use(cors({
+    origin: true,
+    credentials: true,
+    allowedHeaders: ["Content-Type", "token", "Authorization"]
+}));
 app.use(express.json())
 
 app.get("/", async (req, res) => {
@@ -165,6 +170,44 @@ app.get("/api/rooms/:id", async (req, res) => {
     res.json({ room, players });
 });
 
-app.listen(process.env.PORT,()=>{
-    console.log(`server listening on port ${process.env.PORT}`)
-})
+app.post("/api/livekit/token", authenticate, async (req, res) => {
+    try {
+        const userId = req.body.id as string;
+        const roomId = (req.body.roomId || req.query.roomId) as string;
+
+        if (!roomId) {
+            return res.status(400).json({ error: "roomId is required" });
+        }
+
+        const user = await database.User.first({ id: userId });
+        const userName = user?.name || "Player";
+
+        const apiKey = process.env.LIVEKIT_API_KEY || "devkey";
+        const apiSecret = process.env.LIVEKIT_API_SECRET || "secret";
+        const serverUrl = process.env.LIVEKIT_URL || "ws://localhost:7880";
+
+        const at = new AccessToken(apiKey, apiSecret, {
+            identity: userId,
+            name: userName,
+        });
+
+        at.addGrant({
+            roomJoin: true,
+            room: roomId,
+            canPublish: true,
+            canSubscribe: true,
+            canPublishData: true,
+        });
+
+        const token = await at.toJwt();
+        return res.json({ token, serverUrl, userId, userName });
+    } catch (err) {
+        console.error("Error generating LiveKit token:", err);
+        return res.status(500).json({ error: "Failed to generate LiveKit token" });
+    }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`server listening on port ${PORT}`);
+});

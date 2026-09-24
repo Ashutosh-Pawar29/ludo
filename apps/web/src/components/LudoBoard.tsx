@@ -301,7 +301,7 @@ export const LudoBoard: React.FC<LudoBoardProps> = ({
         >
           {/* Top Video Frame */}
           <div className="yard-video-frame">
-            <VideoTrackView track={media!.videoTrack} isSelf={isPlayerMe} />
+            <VideoTrackView key={`board-video-${player.userId}`} track={media!.videoTrack} isSelf={isPlayerMe} />
             <div className="yard-video-overlay-badge">
               <span className="yard-video-player-name">{player.name}</span>
               <div style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>

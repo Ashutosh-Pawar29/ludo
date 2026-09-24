@@ -1,0 +1,24 @@
+# LiveKit Server Configuration for Production EC2 Deployment
+# Ensures fixed UDP/TCP ports and explicitly binds to the EC2 Public IP for WebRTC media.
+
+port: 7880
+bind_addresses:
+  - "0.0.0.0"
+
+rtc:
+  # WebRTC TCP fallback port for clients behind restrictive firewalls
+  tcp_port: 7881
+
+  # WebRTC single UDP port multiplexing (ICE/UDP Mux)
+  # Fixes the bug where LiveKit defaults to random ports 50000-60000 that are blocked!
+  udp_port: 7882
+
+  # Always advertise the public EC2 IP in ICE candidates
+  use_external_ip: true
+  node_ip: "16.192.187.29"
+
+keys:
+  devkey: secret
+
+logging:
+  level: info

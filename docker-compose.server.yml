@@ -37,7 +37,9 @@ services:
     image: livekit/livekit-server:v1.8
     container_name: ludo_server_livekit
     restart: always
-    command: --dev --bind 0.0.0.0 --node-ip ${EC2_PUBLIC_IP:-16.192.187.29}
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./docker/livekit.yaml:/etc/livekit.yaml:ro
     ports:
       - "7880:7880"
       - "7881:7881"

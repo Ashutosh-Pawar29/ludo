@@ -80,7 +80,7 @@ export const PlayerCard = React.memo<PlayerCardProps>(({
           >
             {isCameraOn && mediaInfo?.videoTrack ? (
               <div className="player-video-container">
-                <VideoTrackView track={mediaInfo.videoTrack} isSelf={isSelf} />
+                <VideoTrackView key={`pc-video-${player.userId}`} track={mediaInfo.videoTrack} isSelf={isSelf} />
                 <span className="live-cam-badge">
                   <Video size={10} color="#ffffff" />
                 </span>

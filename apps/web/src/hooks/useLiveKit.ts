@@ -257,7 +257,6 @@ export function useLiveKit(
             if (isCancelled) return;
             const speaking = new Set(speakers.map((s) => s.identity));
             setSpeakingUserIds(speaking);
-            syncParticipants(room);
           })
           .on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication, participant) => {
             if (track.kind === Track.Kind.Audio) {
@@ -383,15 +382,21 @@ export function useLiveKit(
 
   const getParticipantMedia = useCallback(
     (userId: string): ParticipantMediaInfo => {
-      return (
-        participantMediaMap[userId] || {
-          identity: userId,
-          isSpeaking: speakingUserIds.has(userId),
-          isMicOn: false,
-          isCameraOn: false,
-          videoTrack: null,
-        }
-      );
+      const info = participantMediaMap[userId];
+      const isSpeaking = speakingUserIds.has(userId);
+      if (info) {
+        return {
+          ...info,
+          isSpeaking,
+        };
+      }
+      return {
+        identity: userId,
+        isSpeaking,
+        isMicOn: false,
+        isCameraOn: false,
+        videoTrack: null,
+      };
     },
     [participantMediaMap, speakingUserIds]
   );

@@ -30,7 +30,7 @@ const CORNER_NAMES: Record<string, string> = {
   ORANGE: "Orange Bay",
 };
 
-export const PlayerCard: React.FC<PlayerCardProps> = ({
+export const PlayerCard = React.memo<PlayerCardProps>(({
   player,
   isCurrentTurn,
   isHost,
@@ -172,4 +172,6 @@ export const PlayerCard: React.FC<PlayerCardProps> = ({
       </div>
     </div>
   );
-};
+});
+
+PlayerCard.displayName = "PlayerCard";

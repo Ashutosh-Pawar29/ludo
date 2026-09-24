@@ -8,7 +8,7 @@ interface VideoTrackViewProps {
   style?: React.CSSProperties;
 }
 
-export const VideoTrackView: React.FC<VideoTrackViewProps> = ({
+export const VideoTrackView = React.memo<VideoTrackViewProps>(({
   track,
   isSelf = false,
   className = "",
@@ -20,10 +20,18 @@ export const VideoTrackView: React.FC<VideoTrackViewProps> = ({
     const el = videoRef.current;
     if (!el || !track) return;
 
-    track.attach(el);
+    try {
+      track.attach(el);
+    } catch (e) {
+      console.warn("Could not attach video track:", e);
+    }
 
     return () => {
-      track.detach(el);
+      try {
+        track.detach(el);
+      } catch {
+        // ignore detach error
+      }
     };
   }, [track]);
 
@@ -46,4 +54,6 @@ export const VideoTrackView: React.FC<VideoTrackViewProps> = ({
       }}
     />
   );
-};
+});
+
+VideoTrackView.displayName = "VideoTrackView";

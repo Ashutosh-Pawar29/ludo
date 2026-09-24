@@ -51,6 +51,7 @@ export function useLiveKit(
   const roomRef = useRef<Room | null>(null);
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const activeRoomIdRef = useRef<string | null>(null);
+  const isConnectingRef = useRef<boolean>(false);
 
   // Helper to re-index all participants (local and remote) into media map
   const syncParticipants = useCallback((room: Room) => {
@@ -129,6 +130,7 @@ export function useLiveKit(
         }
       });
       audioElementsRef.current.clear();
+      isConnectingRef.current = false;
     };
   }, []);
 
@@ -140,6 +142,7 @@ export function useLiveKit(
         roomRef.current = null;
       }
       activeRoomIdRef.current = null;
+      isConnectingRef.current = false;
       setIsConnected(false);
       setIsConnecting(false);
       setIsMicEnabled(false);
@@ -149,12 +152,23 @@ export function useLiveKit(
       return;
     }
 
-    // Avoid redundant reconnect if already in this room
-    if (activeRoomIdRef.current === roomId && roomRef.current?.state === "connected") {
+    // Avoid redundant reconnect if already in or connecting to this room
+    if (
+      activeRoomIdRef.current === roomId &&
+      roomRef.current &&
+      (roomRef.current.state === "connected" ||
+        roomRef.current.state === "connecting" ||
+        roomRef.current.state === "reconnecting")
+    ) {
+      return;
+    }
+
+    if (isConnectingRef.current && activeRoomIdRef.current === roomId) {
       return;
     }
 
     let isCancelled = false;
+    isConnectingRef.current = true;
     setIsConnecting(true);
     setError(null);
     activeRoomIdRef.current = roomId;
@@ -291,6 +305,13 @@ export function useLiveKit(
 
         await room.connect(wsUrl, sfuToken, {
           autoSubscribe: true,
+          rtcConfig: {
+            iceServers: [
+              { urls: "stun:stun.l.google.com:19302" },
+              { urls: "stun:stun1.l.google.com:19302" },
+              { urls: "stun:stun2.l.google.com:19302" },
+            ],
+          },
         });
 
         if (isCancelled) {
@@ -308,6 +329,8 @@ export function useLiveKit(
         setError(message);
         setIsConnecting(false);
         setIsConnected(false);
+      } finally {
+        isConnectingRef.current = false;
       }
     }
 
